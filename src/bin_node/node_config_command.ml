@@ -23,6 +23,10 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+let () =
+  Prevalidator_filters.register
+    (module Tezos_mempool_alpha.Filter)
+
 (** Commands *)
 
 let show (args : Node_shared_arg.t) =
