@@ -62,6 +62,7 @@ module Types = struct
     mutable validation_state : Prevalidation.prevalidation_state tzresult ;
     mutable advertisement : [ `Pending of Mempool.t | `None ] ;
     mutable rpc_directory : state RPC_directory.t tzresult Lwt.t lazy_t ;
+    mutable filter_config : Data_encoding.json Protocol_hash.Map.t ;
   }
   type parameters = limits * Distributed_db.chain_db
 
@@ -98,17 +99,30 @@ let debug w =
   Format.kasprintf (fun msg -> Worker.record_event w (Debug msg))
 
 let empty_rpc_directory : unit RPC_directory.t =
-  RPC_directory.register
-    RPC_directory.empty
-    (Block_services.Empty.S.Mempool.pending_operations RPC_path.open_root)
-    (fun _pv () () ->
-       return {
-         Block_services.Empty.Mempool.applied = [] ;
-         refused = Operation_hash.Map.empty ;
-         branch_refused = Operation_hash.Map.empty ;
-         branch_delayed = Operation_hash.Map.empty ;
-         unprocessed = Operation_hash.Map.empty ;
-       })
+  let dir = RPC_directory.empty in
+  let dir =
+    RPC_directory.register
+      dir
+      (Block_services.Empty.S.Mempool.get_filter RPC_path.open_root)
+      (fun _pv () () -> return (`O [])) in
+  let dir =
+    RPC_directory.register
+      dir
+      (Block_services.Empty.S.Mempool.set_filter RPC_path.open_root)
+      (fun _pv () _ -> return ()) in
+  let dir =
+    RPC_directory.register
+      dir
+      (Block_services.Empty.S.Mempool.pending_operations RPC_path.open_root)
+      (fun _pv () () ->
+         return {
+           Block_services.Empty.Mempool.applied = [] ;
+           refused = Operation_hash.Map.empty ;
+           branch_refused = Operation_hash.Map.empty ;
+           branch_delayed = Operation_hash.Map.empty ;
+           unprocessed = Operation_hash.Map.empty ;
+         }) in
+  dir
 
 let rpc_directory protocol =
   begin
@@ -122,32 +136,56 @@ let rpc_directory protocol =
         return protocol
   end >>=? fun (module Proto) ->
   let module Proto_services = Block_services.Make(Proto)(Proto) in
-  return @@
-  RPC_directory.register
-    RPC_directory.empty
-    (Proto_services.S.Mempool.pending_operations RPC_path.open_root)
-    (fun pv () () ->
-       let map_op op =
-         let protocol_data =
-           Data_encoding.Binary.of_bytes_exn
-             Proto.operation_data_encoding
-             op.Operation.proto in
-         { Proto.shell = op.shell ; protocol_data } in
-       let map_op_error (op, error) = (map_op op, error) in
-       return {
-         Proto_services.Mempool.applied =
-           List.map
-             (fun (hash, op) -> (hash, map_op op))
-             (List.rev pv.validation_result.applied) ;
-         refused =
-           Operation_hash.Map.map map_op_error pv.validation_result.refused ;
-         branch_refused =
-           Operation_hash.Map.map map_op_error pv.validation_result.branch_refused ;
-         branch_delayed =
-           Operation_hash.Map.map map_op_error pv.validation_result.branch_delayed ;
-         unprocessed =
-           Operation_hash.Map.map map_op pv.pending ;
-       })
+  let dir = RPC_directory.empty in
+  let dir =
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.get_filter RPC_path.open_root)
+      (fun pv () () ->
+         match Protocol_hash.Map.find_opt Proto.hash pv.filter_config with
+         | Some obj -> return obj
+         | None ->
+             begin match Prevalidator_filters.find Proto.hash with
+               | None -> return (`O [])
+               | Some (module Filter) ->
+                   let default = Data_encoding.Json.construct Filter.config_encoding Filter.default_config in
+                   return default
+             end
+      ) in
+  let dir =
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.set_filter RPC_path.open_root)
+      (fun pv () obj ->
+         pv.filter_config <- Protocol_hash.Map.add Proto.hash obj pv.filter_config ;
+         return ()) in
+  let dir =
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.pending_operations RPC_path.open_root)
+      (fun pv () () ->
+         let map_op op =
+           let protocol_data =
+             Data_encoding.Binary.of_bytes_exn
+               Proto.operation_data_encoding
+               op.Operation.proto in
+           { Proto.shell = op.shell ; protocol_data } in
+         let map_op_error (op, error) = (map_op op, error) in
+         return {
+           Proto_services.Mempool.applied =
+             List.map
+               (fun (hash, op) -> (hash, map_op op))
+               (List.rev pv.validation_result.applied) ;
+           refused =
+             Operation_hash.Map.map map_op_error pv.validation_result.refused ;
+           branch_refused =
+             Operation_hash.Map.map map_op_error pv.validation_result.branch_refused ;
+           branch_delayed =
+             Operation_hash.Map.map map_op_error pv.validation_result.branch_delayed ;
+           unprocessed =
+             Operation_hash.Map.map map_op pv.pending ;
+         }) in
+  return dir
 
 let list_pendings ?maintain_chain_db  ~from_block ~to_block old_mempool =
   let rec pop_blocks ancestor block mempool =
@@ -340,10 +378,37 @@ let fetch_operation w pv ?peer oph =
 let on_operation_arrived (pv : state) oph op =
   pv.fetching <- Operation_hash.Set.remove oph pv.fetching ;
   if not (Block_hash.Set.mem op.Operation.shell.branch pv.live_blocks) then begin
-    Distributed_db.Operation.clear_or_cancel pv.chain_db oph
+    Distributed_db.Operation.clear_or_cancel pv.chain_db oph ;
     (* TODO: put in a specific delayed map ? *)
-  end else if not (already_handled pv oph) (* prevent double inclusion on flush *) then begin
-    pv.pending <- Operation_hash.Map.add oph op pv.pending
+    return_unit
+  end else if already_handled pv oph then begin
+    (* prevent double inclusion on flush *)
+    return_unit
+  end else begin
+    State.Block.protocol_hash pv.predecessor >>= fun protocol_hash ->
+    begin match Prevalidator_filters.find protocol_hash with
+      | None -> return true
+      | Some (module Filter) ->
+          let protocol_data =
+            Data_encoding.Binary.of_bytes_exn
+              Filter.Proto.operation_data_encoding
+              op.Operation.proto in
+          let op = { Filter.Proto.shell = op.shell ; protocol_data } in
+          try
+            let config =
+              match Protocol_hash.Map.find_opt protocol_hash pv.filter_config with
+              | Some config ->
+                  Data_encoding.Json.destruct Filter.config_encoding config
+              | None ->
+                  Filter.default_config in
+            return (Filter.pre_filter config op.Filter.Proto.protocol_data)
+          with _ ->
+            failwith "invalid mempool filter configuration"
+    end >>=? fun accept ->
+    if accept then
+      (* TODO: should this have an influence on the peer's score ? *)
+      pv.pending <- Operation_hash.Map.add oph op pv.pending ;
+    return_unit
   end
 
 let on_inject pv op =
@@ -358,6 +423,7 @@ let on_inject pv op =
       match result.applied with
       | [ app_oph, _ ] when Operation_hash.equal app_oph oph ->
           Distributed_db.inject_operation pv.chain_db oph op >>= fun (_ : bool) ->
+          (* we bypass the filter for injected operations *)
           pv.pending <- Operation_hash.Map.add oph op pv.pending ;
           return result
       | _ ->
@@ -456,8 +522,7 @@ let on_request
       | Request.Inject op ->
           on_inject pv op
       | Request.Arrived (oph, op) ->
-          on_operation_arrived pv oph op ;
-          return_unit
+          on_operation_arrived pv oph op
       | Request.Advertise ->
           on_advertise pv ;
           return_unit
@@ -505,6 +570,7 @@ let on_launch w _ (limits, chain_db) =
       validation_result ; validation_state ;
       advertisement = `None ;
       rpc_directory = lazy (rpc_directory protocol) ;
+      filter_config = Protocol_hash.Map.empty (* TODO: initialize from config file *) ;
     } in
   List.iter
     (fun oph -> Lwt.ignore_result (fetch_operation w pv oph))

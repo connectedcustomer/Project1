@@ -679,6 +679,21 @@ module Make(Proto : PROTO)(Next_proto : PROTO) = struct
           ~output: encoding
           path
 
+      let get_filter path =
+        RPC_service.get_service
+          ~description: "Get the configuration of the mempool filter."
+          ~query: RPC_query.empty
+          ~output: json
+          RPC_path.(path / "filter")
+
+      let set_filter path =
+        RPC_service.post_service
+          ~description: "Get the configuration of the mempool filter."
+          ~query: RPC_query.empty
+          ~input: json
+          ~output: unit
+          RPC_path.(path / "filter")
+
     end
 
     let live_blocks =
