@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -58,4 +59,3 @@ module Register_embedded
   T with type P.block_header_data = Proto.block_header_data
      and type P.operation_data = Proto.operation_data
      and type P.operation_receipt = Proto.operation_receipt
-     and type P.validation_state = Proto.validation_state
