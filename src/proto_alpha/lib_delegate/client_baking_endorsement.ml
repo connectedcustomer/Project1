@@ -198,7 +198,7 @@ let prepare_endorsement ~(max_past:int64) () (cctxt : #Proto_alpha.full) state b
 
 let compute_timeout state =
   match state.pending with
-  | None -> Lwt_utils.never_ending ()
+  | None -> Lwt_utils.never_ending
   | Some { time ; block ; delegates } ->
       match Client_baking_scheduling.sleep_until time with
       | None -> Lwt.return (block, delegates)

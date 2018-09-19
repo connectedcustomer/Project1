@@ -277,6 +277,6 @@ let create (cctxt : #Proto_alpha.full) ~preserved_levels valid_blocks_stream =
     ~stream:valid_blocks_stream
     ~state_maker
     ~pre_loop:(fun _ _ _ -> return_unit)
-    ~compute_timeout:(fun _ -> Lwt_utils.never_ending ())
+    ~compute_timeout:(fun _ -> Lwt_utils.never_ending)
     ~timeout_k:(fun _ _ () -> return_unit)
     ~event_k:process_block

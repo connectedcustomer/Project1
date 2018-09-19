@@ -1006,7 +1006,7 @@ let create
     match state.best_slot with
     | None ->
         (* No slot, just wait for new blocks which will give more info *)
-        Lwt_utils.never_ending ()
+        Lwt_utils.never_ending
     | Some (timestamp, _) ->
         match Client_baking_scheduling.sleep_until timestamp with
         | None -> Lwt.return_unit
