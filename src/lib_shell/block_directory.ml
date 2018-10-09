@@ -264,7 +264,7 @@ let build_raw_rpc_directory
       ~predecessor:block
       ~timestamp
       ~protocol_data
-      ~sort_operations:q#sort_operations
+      (module Prevalidation.Make(Next_proto))
       operations
   end ;
 

@@ -108,6 +108,7 @@ and peer_validator_limits = Peer_validator.limits = {
 
 and prevalidator_limits = Prevalidator.limits = {
   max_refused_operations: int ;
+  max_queued_operations: int ;
   operation_timeout: float ;
   worker_limits : Worker_types.limits ;
 }
@@ -134,6 +135,7 @@ let default_block_validator_limits = {
 let default_prevalidator_limits = {
   operation_timeout = 10. ;
   max_refused_operations = 1000 ;
+  max_queued_operations = 1000 ;
   worker_limits = {
     backlog_size = 1000 ;
     backlog_level = Logging.Info ;

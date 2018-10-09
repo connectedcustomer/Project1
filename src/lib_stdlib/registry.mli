@@ -23,21 +23,18 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Tezos Shell Module - Mempool, a.k.a. the operations safe to be
-    broadcasted. *)
+(** A simple imperative map *)
 
-type t = {
-  known_valid: Operation_hash.t list ;
-  (** A valid sequence of operations on top of the current head. *)
-  pending: Operation_hash.Set.t ;
-  (** Set of known not-invalid operation. *)
-}
-type mempool = t
+module type S = sig
+  type k
+  type v
+  val register: k -> v -> unit
+  val alter: k -> (v -> v) -> unit
+  val query: k -> v option
+  val iter_p: (k -> v -> unit Lwt.t) -> unit Lwt.t
+  val fold: (k -> v -> 'a -> 'a) -> 'a -> 'a
+end
 
-val all_hashes: t -> Operation_hash.t list
-
-val encoding: mempool Data_encoding.t
-val bounded_encoding: ?max_operations:int -> unit -> mempool Data_encoding.t
-
-val empty: mempool
-(** Empty mempool. *)
+module Make (M: sig type v include Map.OrderedType end) : S
+  with type k = M.t
+   and type v = M.v

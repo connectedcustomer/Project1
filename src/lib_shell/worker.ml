@@ -57,11 +57,192 @@ module type TYPES = sig
   val pp : Format.formatter -> view -> unit
 end
 
+module type WORKER = sig
+
+  (* Types substituted when applying the functor *)
+  type 'a request_t
+  type request_view
+  type types_state
+  type types_parameters
+  type types_view
+  type event_t
+  type name_t
+
+  type 'kind t
+
+  (** A handle to a table of workers. *)
+  type 'kind table
+
+  (** Internal buffer kinds used as parameters to {!t}. *)
+  type 'a queue and bounded and infinite
+  type dropbox
+
+
+  (** Supported kinds of internal buffers. *)
+  type _ buffer_kind =
+    | Queue : infinite queue buffer_kind
+    | Bounded : { size : int } -> bounded queue buffer_kind
+    | Dropbox :
+        { merge : (dropbox t ->
+                   any_request ->
+                   any_request option ->
+                   any_request option) }
+      -> dropbox buffer_kind
+  and any_request = Any_request : _ request_t -> any_request
+
+  (** Create a table of workers. *)
+  val create_table : 'kind buffer_kind -> 'kind table
+
+  (** An error returned when trying to communicate with a worker that
+      has been closed. *)
+  type Error_monad.error += Closed of name_t
+
+  (** The callback handlers specific to each worker instance. *)
+  module type HANDLERS = sig
+
+    (** Placeholder replaced with {!t} with the right parameters
+        provided by the type of buffer chosen at {!launch}.*)
+    type self
+
+    (** Builds the initial internal state of a worker at launch.
+        It is possible to initialize the message queue.
+        Of course calling {!state} will fail at that point. *)
+    val on_launch :
+      self -> name_t -> types_parameters -> types_state Lwt.t
+
+    (** The main request processor, i.e. the body of the event loop. *)
+    val on_request :
+      self -> 'a request_t -> 'a tzresult Lwt.t
+
+    (** Called when no request has been made before the timeout, if
+        the parameter has been passed to {!launch}. *)
+    val on_no_request :
+      self -> unit tzresult Lwt.t
+
+    (** A function called when terminating a worker. *)
+    val on_close :
+      self -> unit Lwt.t
+
+    (** A function called at the end of the worker loop in case of an
+        abnormal error. This function can handle the error by
+        returning [Ok ()], or leave the default unexpected error
+        behaviour by returning its parameter. A possibility is to
+        handle the error for ad-hoc logging, and still use
+        {!trigger_shutdown} to kill the worker. *)
+    val on_error :
+      self ->
+      request_view ->
+      Worker_types.request_status ->
+      error list ->
+      unit tzresult Lwt.t
+
+    (** A function called at the end of the worker loop in case of a
+        successful treatment of the current request. *)
+    val on_completion :
+      self ->
+      'a request_t -> 'a ->
+      Worker_types.request_status ->
+      unit Lwt.t
+
+  end
+
+  (** Creates a new worker instance.
+      Parameter [queue_size] not passed means unlimited queue. *)
+  val launch :
+    'kind table -> ?timeout:float ->
+    Worker_types.limits -> name_t -> types_parameters ->
+    (module HANDLERS with type self = 'kind t) ->
+    'kind t Lwt.t
+
+  (** Triggers a worker termination and waits for its completion.
+      Cannot be called from within the handlers.  *)
+  val shutdown :
+    _ t -> unit Lwt.t
+
+  (** Adds a message to the queue and waits for its result.
+      Cannot be called from within the handlers. *)
+  val push_request_and_wait :
+    _ queue t -> 'a request_t -> 'a tzresult Lwt.t
+
+  (** Adds a message to the queue. *)
+  val push_request :
+    _ queue t -> 'a request_t -> unit Lwt.t
+
+  (** Adds a message to the queue immediately.
+      Returns [false] if the queue is full. *)
+  val try_push_request_now :
+    bounded queue t -> 'a request_t -> bool
+
+  (** Adds a message to the queue immediately. *)
+  val push_request_now :
+    infinite queue t -> 'a request_t -> unit
+
+  (** Sets the current request. *)
+  val drop_request :
+    dropbox t -> 'a request_t -> unit
+
+  (** Detects cancelation from within the request handler to stop
+      asynchronous operations. *)
+  val protect :
+    _ t ->
+    ?on_error: (error list -> 'b tzresult Lwt.t) ->
+    (unit -> 'b tzresult Lwt.t) ->
+    'b tzresult Lwt.t
+
+  (** Exports the canceler to allow cancelation of other tasks when this
+      worker is shutdowned or when it dies. *)
+  val canceler : _ t -> Lwt_canceler.t
+
+  (** Triggers a worker termination. *)
+  val trigger_shutdown : _ t -> unit
+
+  (** Recod an event in the backlog. *)
+  val record_event : _ t -> event_t -> unit
+
+  (** Record an event and make sure it is logged. *)
+  val log_event : _ t -> event_t -> unit Lwt.t
+
+  (** Access the internal state, once initialized. *)
+  val state : _ t -> types_state
+
+  (** Access the event backlog. *)
+  val last_events : _ t -> (Logging.level * event_t list) list
+
+  (** Introspect the message queue, gives the times requests were pushed. *)
+  val pending_requests : _ queue t -> (Time.t * request_view) list
+
+  (** Get the running status of a worker. *)
+  val status : _ t -> Worker_types.worker_status
+
+  (** Get the request being treated by a worker.
+      Gives the time the request was pushed, and the time its
+      treatment started. *)
+  val current_request : _ t -> (Time.t * Time.t * request_view) option
+
+  (** Introspect the state of a worker. *)
+  val view : _ t -> types_view
+
+  (** Lists the running workers in this group.
+      After they are killed, workers are kept in the table
+      for a number of seconds given in the {!Worker_types.limits}. *)
+  val list : 'a table -> (name_t * 'a t) list
+
+end
+
 module Make
     (Name : NAME)
     (Event : EVENT)
     (Request : REQUEST)
-    (Types : TYPES) = struct
+    (Types : TYPES)
+  : WORKER
+    with type name_t := Name.t
+     and type event_t := Event.t
+     and type 'a request_t := 'a Request.t
+     and type request_view := Request.view
+     and type types_state := Types.state
+     and type types_parameters := Types.parameters
+     and type types_view := Types.view
+= struct
 
   let base_name = String.concat "." Name.base
 

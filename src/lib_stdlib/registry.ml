@@ -23,21 +23,33 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Tezos Shell Module - Mempool, a.k.a. the operations safe to be
-    broadcasted. *)
+module type S = sig
+  type k
+  type v
+  val register: k -> v -> unit
+  val alter: k -> (v -> v) -> unit
+  val query: k -> v option
+  val iter_p: (k -> v -> unit Lwt.t) -> unit Lwt.t
+  val fold: (k -> v -> 'a -> 'a) -> 'a -> 'a
+end
 
-type t = {
-  known_valid: Operation_hash.t list ;
-  (** A valid sequence of operations on top of the current head. *)
-  pending: Operation_hash.Set.t ;
-  (** Set of known not-invalid operation. *)
-}
-type mempool = t
+module Make (M: sig type v include Map.OrderedType end) : S
+  with type k = M.t
+   and type v = M.v =
+struct
 
-val all_hashes: t -> Operation_hash.t list
+  module Reg = Map.Make(M)
+  type v = M.v
+  type k = Reg.key
+  let registry: v Reg.t ref = ref Reg.empty
+  let register k v = registry := Reg.add k v !registry
+  let alter k f =
+    match Reg.find_opt k !registry with
+    | None -> ()
+    | Some v -> registry := Reg.add k (f v) !registry
+  let query k = Reg.find_opt k !registry
+  let iter_p f = Lwt.join (Reg.fold (fun k v acc -> (f k v) :: acc) !registry [])
+  let fold f a = Reg.fold f !registry a
 
-val encoding: mempool Data_encoding.t
-val bounded_encoding: ?max_operations:int -> unit -> mempool Data_encoding.t
+end
 
-val empty: mempool
-(** Empty mempool. *)

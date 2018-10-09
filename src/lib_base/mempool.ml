@@ -29,6 +29,9 @@ type t = {
 }
 type mempool = t
 
+let all_hashes { known_valid; pending } =
+  known_valid @ Operation_hash.Set.elements pending
+
 let encoding =
   let open Data_encoding in
   conv

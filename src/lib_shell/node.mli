@@ -44,6 +44,7 @@ and peer_validator_limits = {
 }
 and prevalidator_limits = {
   max_refused_operations: int ;
+  max_queued_operations: int ;
   operation_timeout: float ;
   worker_limits : Worker_types.limits ;
 }

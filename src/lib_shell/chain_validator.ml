@@ -268,6 +268,8 @@ let on_request (type a) w spawn_child (req : a Request.t) : a tzresult Lwt.t =
     begin match nv.prevalidator with
       | Some prevalidator ->
           Prevalidator.flush prevalidator block_hash
+      (* FIXME: if this fails, it is a serious issue: the prevalidator does
+       * not hold a valid prevalidation context anymore. What to do? *)
       | None -> return_unit
     end >>=? fun () ->
     may_switch_test_chain w spawn_child block >>= fun () ->
@@ -302,9 +304,14 @@ let on_close w =
 let on_launch start_prevalidator w _ parameters =
   Chain.init_head parameters.chain_state >>= fun () ->
   (if start_prevalidator then
-     Prevalidator.create
-       parameters.prevalidator_limits parameters.chain_db >>= fun prevalidator ->
-     Lwt.return_some prevalidator
+     Pervasives.failwith "TODO[FILTER] recover filter from proto hash" >>= fun (module Filter: Prevalidator_filters.FILTER) ->
+     Prevalidator.create parameters.prevalidator_limits (module Filter) parameters.chain_db
+     >>= function
+     | Ok prevalidator -> Lwt.return_some prevalidator
+     | Error errs ->
+         (* FIXME[?,ERROR] what to do if the prevalidator doesn't initialise properly? *)
+         ignore errs; (* TODO[ERROR,LOG] log errors *)
+         Lwt.return_none
    else Lwt.return_none) >>= fun prevalidator ->
   let valid_block_input = Lwt_watcher.create_input () in
   let new_head_input = Lwt_watcher.create_input () in

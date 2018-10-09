@@ -1,7 +1,7 @@
 (*****************************************************************************)
 (*                                                                           *)
 (* Open Source License                                                       *)
-(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Development. <contact@tezcore.com>             *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -23,45 +23,43 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+(** Type of a protocol-specific mempool filter plug-in. *)
+module type FILTER = sig
 
-(** TODO? package that neatly so it can be used separately for each chain?
- * The peer workers need it, but it's a bit more complicated for the result
- * cache: completely invalid (e.g., content not matching hash) blocks should be
- * globally banned, but otherly invalid ops shouldn't (they might be valid in a
- * different chain).
- * *)
+  (** Type of protocol-specific mempool configuration, as specifiable
+      in the node's configuration file, and updatable via RPCs. *)
+  type config
 
-(* The type for registering known hashes *)
-type cache_entry =
-  | Invalid
-  | Valid
-  | Being_processed
+  (** Formatting of {!config} for the configuration file and RPCs. *)
+  val config_encoding : config Data_encoding.t
 
-(** [query_result_cache hash] is
-    - [None] if the operation is not known
-    - [Some x] if the operation is known to be x
-*)
-val query_result_cache: Operation_hash.t -> cache_entry option
+  (** Default configuration value, used when none is specified. *)
+  val default_config : config
 
-(** [insert_result_in_cache hash result] associates the [result] to the [hash]
-    in the result cache.
-*)
-val insert_result_in_cache: Operation_hash.t -> cache_entry -> unit
+  (** The protocol this plug-in understands. *)
+  module Proto : Registered_protocol.T
 
+  (** Tells if an operation should be kept and propagated before even running it. *)
+  val pre_filter : config -> Proto.operation_data -> bool
 
+  (** Tells if an operation should be kept and propagated considering its result. *)
+  val post_filter : config -> Proto.operation_data * Proto.operation_receipt -> bool
+end
 
+(** Registers a mempool plug-in for a specific protocol (according to its [Proto.hash]). *)
+val register : (module FILTER) -> unit
 
-(** Register the peer worker associated with the peer *)
-val register_peer_worker: P2p_peer.Id.t -> Prevalidator_workers.worker -> unit
+(** Looks for a mempool plug-in for a specific protocol. *)
 
-(** Replaces the worker registered by the score (TODO) of the peer. In the
- * future, this remembered score can be used to initialise a new peer worker. *)
-val unregister_peer_worker: P2p_peer.Id.t -> Prevalidator_workers.worker -> unit
+type ('operation_data, 'operation_receipt) filter =
+  (module FILTER
+    with type Proto.P.operation_data = 'operation_data
+     and type Proto.P.operation_receipt = 'operation_receipt)
+type ('operation_data, 'operation_receipt) proto =
+  (module Registered_protocol.T
+    with type P.operation_data = 'operation_data
+     and type P.operation_receipt = 'operation_receipt)
 
-type peer_registration =
-  | Active of Prevalidator_workers.worker
-  | Inactive (* TODO to maintain score across disconnects: of score *)
-
-val query_peer: P2p_peer.Id.t -> peer_registration option
-
-
+val find :
+  ('operation_data, 'operation_receipt) proto ->
+  ('operation_data, 'operation_receipt) filter option

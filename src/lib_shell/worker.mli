@@ -118,18 +118,17 @@ end
 
 (** {2 Worker group maker} *)
 
-(** Functor to build a group of workers.
-    At that point, all the types are fixed and introspectable,
-    but the actual parameters and event handlers can be tweaked
-    for each individual worker. *)
-module Make
-    (Name : NAME)
-    (Event : EVENT)
-    (Request : REQUEST)
-    (Types : TYPES) : sig
+module type WORKER = sig
 
-  (** A handle to a specific worker, parameterized by the type of
-      internal message buffer. *)
+  (* Types substituted when applying the functor *)
+  type 'a request_t
+  type request_view
+  type types_state
+  type types_parameters
+  type types_view
+  type event_t
+  type name_t
+
   type 'kind t
 
   (** A handle to a table of workers. *)
@@ -150,14 +149,14 @@ module Make
                    any_request option ->
                    any_request option) }
       -> dropbox buffer_kind
-  and any_request = Any_request : _ Request.t -> any_request
+  and any_request = Any_request : _ request_t -> any_request
 
   (** Create a table of workers. *)
   val create_table : 'kind buffer_kind -> 'kind table
 
   (** An error returned when trying to communicate with a worker that
       has been closed. *)
-  type Error_monad.error += Closed of Name.t
+  type Error_monad.error += Closed of name_t
 
   (** The callback handlers specific to each worker instance. *)
   module type HANDLERS = sig
@@ -170,11 +169,11 @@ module Make
         It is possible to initialize the message queue.
         Of course calling {!state} will fail at that point. *)
     val on_launch :
-      self -> Name.t -> Types.parameters -> Types.state Lwt.t
+      self -> name_t -> types_parameters -> types_state Lwt.t
 
     (** The main request processor, i.e. the body of the event loop. *)
     val on_request :
-      self -> 'a Request.t -> 'a tzresult Lwt.t
+      self -> 'a request_t -> 'a tzresult Lwt.t
 
     (** Called when no request has been made before the timeout, if
         the parameter has been passed to {!launch}. *)
@@ -193,7 +192,7 @@ module Make
         {!trigger_shutdown} to kill the worker. *)
     val on_error :
       self ->
-      Request.view ->
+      request_view ->
       Worker_types.request_status ->
       error list ->
       unit tzresult Lwt.t
@@ -202,7 +201,7 @@ module Make
         successful treatment of the current request. *)
     val on_completion :
       self ->
-      'a Request.t -> 'a ->
+      'a request_t -> 'a ->
       Worker_types.request_status ->
       unit Lwt.t
 
@@ -212,7 +211,7 @@ module Make
       Parameter [queue_size] not passed means unlimited queue. *)
   val launch :
     'kind table -> ?timeout:float ->
-    Worker_types.limits -> Name.t -> Types.parameters ->
+    Worker_types.limits -> name_t -> types_parameters ->
     (module HANDLERS with type self = 'kind t) ->
     'kind t Lwt.t
 
@@ -224,24 +223,24 @@ module Make
   (** Adds a message to the queue and waits for its result.
       Cannot be called from within the handlers. *)
   val push_request_and_wait :
-    _ queue t -> 'a Request.t -> 'a tzresult Lwt.t
+    _ queue t -> 'a request_t -> 'a tzresult Lwt.t
 
   (** Adds a message to the queue. *)
   val push_request :
-    _ queue t -> 'a Request.t -> unit Lwt.t
+    _ queue t -> 'a request_t -> unit Lwt.t
 
   (** Adds a message to the queue immediately.
       Returns [false] if the queue is full. *)
   val try_push_request_now :
-    bounded queue t -> 'a Request.t -> bool
+    bounded queue t -> 'a request_t -> bool
 
   (** Adds a message to the queue immediately. *)
   val push_request_now :
-    infinite queue t -> 'a Request.t -> unit
+    infinite queue t -> 'a request_t -> unit
 
   (** Sets the current request. *)
   val drop_request :
-    dropbox t -> 'a Request.t -> unit
+    dropbox t -> 'a request_t -> unit
 
   (** Detects cancelation from within the request handler to stop
       asynchronous operations. *)
@@ -259,19 +258,19 @@ module Make
   val trigger_shutdown : _ t -> unit
 
   (** Recod an event in the backlog. *)
-  val record_event : _ t -> Event.t -> unit
+  val record_event : _ t -> event_t -> unit
 
   (** Record an event and make sure it is logged. *)
-  val log_event : _ t -> Event.t -> unit Lwt.t
+  val log_event : _ t -> event_t -> unit Lwt.t
 
   (** Access the internal state, once initialized. *)
-  val state : _ t -> Types.state
+  val state : _ t -> types_state
 
   (** Access the event backlog. *)
-  val last_events : _ t -> (Logging.level * Event.t list) list
+  val last_events : _ t -> (Logging.level * event_t list) list
 
   (** Introspect the message queue, gives the times requests were pushed. *)
-  val pending_requests : _ queue t -> (Time.t * Request.view) list
+  val pending_requests : _ queue t -> (Time.t * request_view) list
 
   (** Get the running status of a worker. *)
   val status : _ t -> Worker_types.worker_status
@@ -279,14 +278,34 @@ module Make
   (** Get the request being treated by a worker.
       Gives the time the request was pushed, and the time its
       treatment started. *)
-  val current_request : _ t -> (Time.t * Time.t * Request.view) option
+  val current_request : _ t -> (Time.t * Time.t * request_view) option
 
   (** Introspect the state of a worker. *)
-  val view : _ t -> Types.view
+  val view : _ t -> types_view
 
   (** Lists the running workers in this group.
       After they are killed, workers are kept in the table
       for a number of seconds given in the {!Worker_types.limits}. *)
-  val list : 'a table -> (Name.t * 'a t) list
+  val list : 'a table -> (name_t * 'a t) list
 
 end
+
+(** Functor to build a group of workers.
+    At that point, all the types are fixed and introspectable,
+    but the actual parameters and event handlers can be tweaked
+    for each individual worker. *)
+module Make
+    (Name : NAME)
+    (Event : EVENT)
+    (Request : REQUEST)
+    (Types : TYPES) :
+
+  WORKER
+  with type name_t := Name.t
+   and type event_t := Event.t
+   and type 'a request_t := 'a Request.t
+   and type request_view := Request.view
+   and type types_state := Types.state
+   and type types_parameters := Types.parameters
+   and type types_view := Types.view
+

@@ -1,7 +1,7 @@
 (*****************************************************************************)
 (*                                                                           *)
 (* Open Source License                                                       *)
-(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Development. <contact@tezcore.com>             *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -23,21 +23,39 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Tezos Shell Module - Mempool, a.k.a. the operations safe to be
-    broadcasted. *)
+module type FILTER = sig
+  type config
+  val config_encoding : config Data_encoding.t
+  val default_config : config
+  module Proto : Registered_protocol.T
+  val pre_filter : config -> Proto.operation_data -> bool
+  val post_filter : config -> Proto.operation_data * Proto.operation_receipt -> bool
+end
 
-type t = {
-  known_valid: Operation_hash.t list ;
-  (** A valid sequence of operations on top of the current head. *)
-  pending: Operation_hash.Set.t ;
-  (** Set of known not-invalid operation. *)
-}
-type mempool = t
+type ('operation_data, 'operation_receipt) filter =
+  (module FILTER
+    with type Proto.P.operation_data = 'operation_data
+     and type Proto.P.operation_receipt = 'operation_receipt)
+type ('operation_data, 'operation_receipt) proto =
+  (module Registered_protocol.T
+    with type P.operation_data = 'operation_data
+     and type P.operation_receipt = 'operation_receipt)
 
-val all_hashes: t -> Operation_hash.t list
 
-val encoding: mempool Data_encoding.t
-val bounded_encoding: ?max_operations:int -> unit -> mempool Data_encoding.t
+let table: (Protocol_hash.t, (module FILTER)) Hashtbl.t = Hashtbl.create 8
 
-val empty: mempool
-(** Empty mempool. *)
+let register (f: (module FILTER)) =
+  let module F = (val f) in
+  Hashtbl.add table (F.Proto.hash) f
+
+let find (type op_data) (type op_receipt) (p: (op_data, op_receipt) proto)
+  : (op_data, op_receipt) filter option
+  =
+  let module P = (val p) in
+  let f = Hashtbl.find_opt table P.hash in
+  match f with
+  | None -> None
+  | Some (f: (module FILTER)) ->
+      let module F = (val f) in
+      assert (P.hash = F.Proto.hash);
+      Obj.magic f

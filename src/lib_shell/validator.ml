@@ -148,7 +148,7 @@ let inject_operation v ?chain_id op =
   end >>=? fun nv ->
   let pv_opt = Chain_validator.prevalidator nv in
   match pv_opt with
-  | Some pv -> Prevalidator.inject_operation pv op
+  | Some pv -> Prevalidator.inject_operation pv op >>= return
   | None -> failwith "Prevalidator is not running, cannot inject the operation."
 
 let distributed_db { db } = db

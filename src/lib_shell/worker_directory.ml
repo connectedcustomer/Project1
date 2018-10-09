@@ -33,25 +33,6 @@ let build_rpc_directory state =
   let register2 s f =
     dir := RPC_directory.register !dir s (fun (((), a), b) p q -> f a b p q) in
 
-  (* Workers : Prevalidators *)
-
-  register0  Worker_services.Prevalidators.S.list begin fun () () ->
-    return
-      (List.map
-         (fun (id, w) -> (id, Prevalidator.status w))
-         (Prevalidator.running_workers ()))
-  end ;
-
-  register1 Worker_services.Prevalidators.S.state begin fun chain () () ->
-    Chain_directory.get_chain_id state chain >>= fun chain_id ->
-    let w = List.assoc chain_id (Prevalidator.running_workers ()) in
-    return
-      { Worker_types.status = Prevalidator.status w ;
-        pending_requests = Prevalidator.pending_requests w ;
-        backlog = Prevalidator.last_events w ;
-        current_request = Prevalidator.current_request w }
-  end ;
-
   (* Workers : Block_validator *)
 
   register0 Worker_services.Block_validator.S.state begin fun () () ->

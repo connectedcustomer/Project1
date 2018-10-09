@@ -28,48 +28,89 @@
     consistency. This module is stateless and creates and manupulates the
     prevalidation_state. *)
 
-type prevalidation_state
+module type T = sig
 
-(** Creates a new prevalidation context w.r.t. the protocol associate to the
-    predecessor block . When ?protocol_data is passed to this function, it will
-    be used to create the new block *)
-val start_prevalidation :
-  ?protocol_data: MBytes.t ->
-  predecessor: State.Block.t ->
-  timestamp: Time.t ->
-  unit -> prevalidation_state tzresult Lwt.t
+  module Proto : Registered_protocol.T
+  (* The protocol that this `Prevalidation.T` uses. The protocol provides
+   * primitives for parsing operation, checking the result of operations, etc.
+   * A functor (below) can create a `T` from a protocol. *)
 
-(** Given a prevalidation context applies a list of operations,
-    returns a new prevalidation context plus the preapply result containing the
-    list of operations that cannot be applied to this context *)
-val prevalidate :
-  prevalidation_state -> sort:bool ->
-  (Operation_hash.t * Operation.t) list ->
-  (prevalidation_state * error Preapply_result.t) Lwt.t
+  type t
+  (* A stateless (functional) representation of a prevalidation context. *)
 
-val end_prevalidation :
-  prevalidation_state ->
-  Tezos_protocol_environment_shell.validation_result tzresult Lwt.t
+  type operation = private {
+    hash: Operation_hash.t ;
+    raw: Operation.t ;
+    protocol_data: Proto.operation_data ;
+  }
+  (* Decorated operation with protocol-specific data (to avoid having to parse
+   * mutliple times) *)
 
-(** Pre-apply creates a new block ( running start_prevalidation, prevalidate and
-    end_prevalidation), and returns a new block. *)
+  val parse: Operation.t -> operation tzresult
+  (* Wraps the Protocol-specific parsing to return a result in a nicer form *)
+
+  val compare: operation -> operation -> int
+  (* Total order *)
+
+  val parse_list:
+    Operation.t list ->
+    operation list * (Operation.t * error list) list
+  (* parse all operations in the argument and sort thems into two lists based on
+   * success/failure. *)
+
+  (** Creates a new prevalidation context w.r.t. the protocol associate to the
+      predecessor block . When ?protocol_data is passed to this function, it will
+      be used to create the new block *)
+  val start:
+    ?protocol_data: MBytes.t ->
+    predecessor: State.Block.t ->
+    timestamp: Time.t ->
+    unit -> t tzresult Lwt.t
+
+  type result =
+    | Applied of t * operation * Proto.operation_receipt
+    (** the operation is applied succesfully *)
+    | Branch_delayed of operation * error list
+    (** the operation cannot be applied in this branch now, but it might be applied
+        in the future. Since this is a temporary error, we keep the raw operation.
+        Ex. endorsement for a unknown block, or operation without funds *)
+    | Branch_refused of error list
+    (** the operation cannot be applied in this branch, but it might be applied in
+        a different branch *)
+    | Refused of error list
+    (** the operation is invalid. Ex. Parse error *)
+    | Duplicate
+    (** the operation was already included *)
+    | Outdated
+    (** the operation cannot be applied because too old *)
+
+  val apply_operation: t -> operation -> result Lwt.t
+  (* Applies an operation on top of a prevalidation context. A new prevalidation
+   * context is returned inlined with the resulting variant when appropriate. *)
+
+  val apply_operation_list:
+    error Preapply_result.t -> t -> Operation.t list ->
+    (error Preapply_result.t * t) Lwt.t
+  (* Folds over the list of operations to apply all of the operations in the
+   * list *)
+
+  val finalize:
+    t ->
+    ( Tezos_protocol_environment_shell.validation_result
+      * (operation * Proto.operation_receipt) list
+      * Proto.block_header_metadata ) tzresult Lwt.t
+
+end
+
+module Make(Proto : Registered_protocol.T) : T with module Proto = Proto
+
+(** Pre-apply creates a new block and returns it. *)
 val preapply :
   predecessor:State.Block.t ->
   timestamp:Time.t ->
   protocol_data:MBytes.t ->
-  sort_operations:bool ->
+  (module T) ->
   Operation.t list list ->
-  (Block_header.shell_header * error Preapply_result.t list) tzresult Lwt.t
-
-val notify_operation :
-  prevalidation_state ->
-  error Preapply_result.t ->
-  unit
-
-val shutdown_operation_input :
-  prevalidation_state ->
-  unit
-
-val build_rpc_directory :
-  Protocol_hash.t ->
-  (prevalidation_state * error Preapply_result.t) RPC_directory.t tzresult Lwt.t
+  ( Block_header.shell_header
+    (* FIXME here the type should be Tezos_protocol_environment_shell.validation_result *)
+    * error Preapply_result.t list) tzresult Lwt.t
