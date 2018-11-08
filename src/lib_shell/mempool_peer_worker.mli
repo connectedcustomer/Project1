@@ -23,46 +23,45 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+(** Distributing validation work between different workers, one for each peer. *)
+
 type limits = {
   worker_limits : Worker_types.limits ;
 }
 
 module type T = sig
+  module Mempool_worker: Mempool_worker.T
 
-  module Proto: Registered_protocol.T
-
+  (** The type of a peer worker. Each peer worker should be used for treating
+   * all the operations from a given peer. *)
   type t
 
-  type operation = private {
-    hash: Operation_hash.t ;
-    raw: Operation.t ;
-    protocol_data: Proto.operation_data ;
-  }
+  (** Types for calls into this module *)
 
-  type result =
-    | Applied of Proto.operation_receipt
-    | Branch_delayed of error list
-    | Branch_refused of error list
-    | Refused of error list
-    | Duplicate
-    | Not_in_branch
-  val result_encoding : result Data_encoding.t
+  (** [input] are the batches of operations that are given to a peer worker to
+   * validate. These hashes are gossiped on the network, and the mempool checks
+   * their validity before gossiping them furhter. *)
+  type input = Operation_hash.t list
 
-  (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Distributed_db.chain_db -> t tzresult Lwt.t
-  val shutdown : t -> unit Lwt.t
+  (** [create limits peer_id mempool_worker input] creates a peer worker meant
+   * to be used for validating batches of operations sent by the peer [peer_id].
+   * The [mempool_worker] the underlying worker that individual validations of
+   * singular operations are delegated to. The [input[] argument is for recycled
+   * operations that are carried over when the protocol updates. *)
+  val create: limits -> P2p_peer.Id.t -> Mempool_worker.t -> input -> t Lwt.t
 
-  (** parse a new operation and add it to the mempool context *)
-  val parse : t -> Operation.t -> operation tzresult Lwt.t
+  (** [shutdown t] closes the peer worker [t]. It returns a list of operation
+   * hashes that can be recycled when a new worker is created for the same peer.
+   * *)
+  val shutdown: t -> input Lwt.t
 
-  (** validate a new operation and add it to the mempool context *)
-  val validate : t -> operation -> result tzresult Lwt.t
-
-  val chain_db : t -> Distributed_db.chain_db
-
-  val rpc_directory : t RPC_directory.t
+  (** [validate mempool_worker worker input] validates the batch of operations
+   * [input]. The work is performed by [worker] and the underlying validation of
+   * each operation is performed by [mempool_worker]. *)
+  val validate: Mempool_worker.t -> t -> input -> unit tzresult Lwt.t
 
 end
 
-module Make (Proto : Registered_protocol.T) : T
 
+module Make (Mempool_worker : Mempool_worker.T)
+  : T with module Mempool_worker = Mempool_worker
