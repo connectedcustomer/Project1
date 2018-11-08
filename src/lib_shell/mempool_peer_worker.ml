@@ -27,7 +27,6 @@
  * compartimentatilsation. *)
 
 type limits = {
-  max_promises_per_request : int ;
   worker_limits : Worker_types.limits ;
 }
 
@@ -37,19 +36,14 @@ module type T = sig
   type t
   type input = Operation_hash.t list
 
-  val create: limits -> P2p_peer.Id.t -> Mempool_worker.t -> t tzresult Lwt.t
+  val create: limits -> P2p_peer.Id.t -> Mempool_worker.t -> t Lwt.t
   val shutdown: t -> input Lwt.t
 
-  val validate: t -> input -> unit tzresult Lwt.t
+  val validate: Mempool_worker.t -> t -> input -> unit tzresult Lwt.t
 
 end
 
-
-module type STATIC = sig
-  val max_pending_requests : int
-end
-
-module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
+module Make (Mempool_worker: Mempool_worker.T)
   : T with module Mempool_worker = Mempool_worker
 = struct
 
@@ -100,10 +94,9 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
   (* 1. Core: the carefully scheduled work performed by the worker *)
 
   module Work : sig
-    val work: Mempool_worker.t -> int -> input -> output Lwt.t
+    val work: Mempool_worker.t -> input -> output Lwt.t
   end = struct
     type t = {
-      pool: unit Lwt_pool.t;
       received: Operation_hash.t Queue.t;
       downloading: (Operation_hash.t * Operation.t tzresult Lwt.t) Queue.t;
       applying: (Mempool_worker.operation * Mempool_worker.result tzresult Lwt.t) Queue.t;
@@ -148,9 +141,8 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
       List.iter (fun x -> Queue.add x q) l;
       q
 
-    let create pool_size op_hashes =
+    let create op_hashes =
       {
-        pool = Lwt_pool.create pool_size Lwt.return;
         received = q_of_list op_hashes;
         downloading = Queue.create ();
         applying = Queue.create ();
@@ -194,9 +186,7 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
                 record_result pipeline op_hash (Cannot_parse errs);
                 Lwt.return_unit
             | Ok mop ->
-                let p =
-                  Lwt_pool.use pipeline.pool (fun () ->
-                      Mempool_worker.validate mempool_worker mop) in
+                let p = Mempool_worker.validate mempool_worker mop in
                 Queue.push (mop, p) pipeline.applying;
                 Lwt.return_unit
       end
@@ -205,9 +195,7 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
         let op_hash = Queue.pop pipeline.received in
         (* TODO[?] should we specify the current peer for fetching? *)
         let chain_db = Mempool_worker.chain_db mempool_worker in
-        let p =
-          Lwt_pool.use pipeline.pool (fun () ->
-              Distributed_db.Operation.fetch chain_db op_hash ()) in
+        let p = Distributed_db.Operation.fetch chain_db op_hash () in
         Queue.push (op_hash, p) pipeline.downloading;
         Lwt.return_unit
       end
@@ -217,12 +205,12 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
         select pipeline >>= fun () ->
         Lwt.return_unit
 
-    let work mempool_worker pool_size input =
-      let pipeline = create pool_size input in
+    let work mempool_worker input =
+      let pipeline = create input in
       let rec loop () =
-        if is_empty pipeline then
+        if is_empty pipeline then begin
           Lwt.return pipeline.results
-        else
+        end else
           step mempool_worker pipeline >>= fun () ->
           loop ()
       in
@@ -238,21 +226,16 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
   module Name = struct
     type t = P2p_peer.Id.t
     let encoding = P2p_peer.Id.encoding
-    let base =
-      let proto_hash =
-        let _: string = Format.flush_str_formatter () in
-        Format.fprintf Format.str_formatter "%a" Protocol_hash.pp Proto.hash;
-        Format.flush_str_formatter () in
-      [ "node"; "mempool"; "peer_worker"; proto_hash ]
+    let base = [ "node.mempool.peer_worker" ]
     let pp = P2p_peer.Id.pp
   end
 
   module Request = struct
-    type 'a t = Batch : input -> output t
+    type 'a t = Batch : (Mempool_worker.t * input) -> output t
     type view = input
     let view
       : type a. a t -> view
-      = fun (Batch os) -> os
+      = fun (Batch (_, os)) -> os
     let encoding =
       let open Data_encoding in
       list Operation_hash.encoding
@@ -314,8 +297,8 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
   end
 
   module Types = struct
-    type parameters = Mempool_worker.t * int
-    type state = { mempool_worker: Mempool_worker.t ; pool_size: int }
+    type parameters = Mempool_worker.t
+    type state = { mempool_worker: Mempool_worker.t }
     type view = unit
     let view _ _ = ()
     let encoding = Data_encoding.unit
@@ -323,10 +306,8 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
   end
 
   module Worker = Worker.Make (Name) (Event) (Request) (Types)
-  type t = Worker.bounded Worker.queue Worker.t
-  let table =
-    let open Worker in
-    create_table (Bounded { size = Static.max_pending_requests })
+  type t = Worker.infinite Worker.queue Worker.t
+  let table = Worker.create_table Queue
 
 
   (* 3. Workers' work: setting workers' callbacks to perform core work *)
@@ -335,14 +316,13 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
 
     type self = t
 
-    let on_launch _ _ (mempool_worker, pool_size) =
-      return Types.{ mempool_worker; pool_size }
+    let on_launch _ _ mempool_worker =
+      Lwt.return Types.{ mempool_worker }
 
     let on_request : type a. self -> a Request.t -> a tzresult Lwt.t
-      = fun t (Request.Batch os) ->
-        let st = Worker.state t in
+      = fun t (Request.Batch (mempool_worker, os)) ->
         Worker.record_event t (Event.Start os) ;
-        Work.work st.mempool_worker st.pool_size os >>= fun r ->
+        Work.work mempool_worker os >>= fun r ->
         return r
 
     let on_no_request _ = return_unit
@@ -367,17 +347,12 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
   (* 4. Public interface: exporting a thin wrapper around workers and work. *)
   (* See interface file for documentation *)
 
-  let validate t os =
-    Worker.push_request_and_wait t (Request.Batch os)
+  let validate mempool_worker t os =
+    Worker.push_request_and_wait t (Request.Batch (mempool_worker, os))
     >>=? fun (_: output) -> return_unit
 
   let create limits peer_id mempool_worker =
-    Worker.launch
-      table
-      limits.worker_limits
-      peer_id
-      (mempool_worker, limits.max_promises_per_request)
-      (module Handlers)
+    Worker.launch table limits.worker_limits peer_id mempool_worker (module Handlers)
 
   let shutdown w =
     let recycled = Operation_hash.Set.empty in
