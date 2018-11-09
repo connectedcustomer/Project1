@@ -106,7 +106,7 @@ module type T = sig
         It is possible to initialize the message queue.
         Of course calling {!state} will fail at that point. *)
     val on_launch :
-      self -> Name.t -> Types.parameters -> Types.state Lwt.t
+      self -> Name.t -> Types.parameters -> Types.state tzresult Lwt.t
 
     (** The main request processor, i.e. the body of the event loop. *)
     val on_request :
@@ -150,7 +150,7 @@ module type T = sig
     'kind table -> ?timeout:float ->
     Worker_types.limits -> Name.t -> Types.parameters ->
     (module HANDLERS with type self = 'kind t) ->
-    'kind t Lwt.t
+    'kind t tzresult Lwt.t
 
   (** Triggers a worker termination and waits for its completion.
       Cannot be called from within the handlers.  *)
@@ -416,7 +416,7 @@ module Make
   module type HANDLERS = sig
     type self
     val on_launch :
-      self -> Name.t -> Types.parameters -> Types.state Lwt.t
+      self -> Name.t -> Types.parameters -> Types.state tzresult Lwt.t
     val on_request :
       self -> 'a Request.t -> 'a tzresult Lwt.t
     val on_no_request :
@@ -515,7 +515,7 @@ module Make
       kind table -> ?timeout:float ->
       Worker_types.limits -> Name.t -> Types.parameters ->
       (module HANDLERS with type self = kind t) ->
-      kind t Lwt.t
+      kind t tzresult Lwt.t
     = fun table ?timeout limits name parameters (module Handlers) ->
       let name_s =
         Format.asprintf "%a" Name.pp name in
@@ -556,7 +556,7 @@ module Make
           Logger.lwt_log_notice "Worker started for %s" name_s
       end >>= fun () ->
       Hashtbl.add table.instances name w ;
-      Handlers.on_launch w name parameters >>= fun state ->
+      Handlers.on_launch w name parameters >>=? fun state ->
       w.status <- Running (Time.now ()) ;
       w.state <- Some state ;
       w.worker <-
@@ -564,7 +564,7 @@ module Make
           full_name
           ~run:(fun () -> worker_loop (module Handlers) w)
           ~cancel:(fun () -> Lwt_canceler.cancel w.canceler) ;
-      Lwt.return w
+      return w
 
   let shutdown w =
     let (module Logger) = w.logger in

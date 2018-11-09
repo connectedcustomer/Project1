@@ -169,7 +169,7 @@ let on_request
 let on_launch _ _ (limits, db, validation_kind) =
   let protocol_validator = Protocol_validator.create db in
   Block_validator_process.init validation_kind >>= fun validation_process ->
-  Lwt.return { Types.protocol_validator ; validation_process ; limits }
+  return { Types.protocol_validator ; validation_process ; limits }
 
 let on_error w r st errs =
   Worker.record_event w (Validation_failure (r, st, errs)) ;

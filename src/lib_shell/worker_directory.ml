@@ -37,12 +37,11 @@ let build_rpc_directory state =
 
   register0  Worker_services.Prevalidators.S.list begin fun () () ->
     let workers = Prevalidator.running_workers () in
-    Lwt_list.map_p
-      (fun (chain_id, _, t) ->
-         Prevalidator.status t >>= fun status ->
-         Lwt.return (chain_id, status))
-      workers >>= fun info ->
-    return info
+    let statuses =
+      List.map
+        (fun (chain_id, _, t) -> (chain_id, Prevalidator.status t))
+        workers in
+    return statuses
   end ;
 
   register1 Worker_services.Prevalidators.S.state begin fun chain () () ->
@@ -53,12 +52,16 @@ let build_rpc_directory state =
        * register multiple Prevalidator for a single chain (using distinct
        * protocols). However, this is never done. *)
       List.find (fun (c, _, _) -> Chain_id.equal c chain_id) workers in
-    Prevalidator.status t >>= fun status ->
+    let status = Prevalidator.status t in
+    let pending_requests = Prevalidator.pending_requests t in
+    let backlog = Prevalidator.last_events t in
+    let current_request = Prevalidator.current_request t in
     return
-      { Worker_types.status = status ;
-        pending_requests = Prevalidator.pending_requests t ;
-        backlog = Prevalidator.last_events t ;
-        current_request = Prevalidator.current_request t }
+      { Worker_types.
+        status ;
+        pending_requests ;
+        backlog ;
+        current_request }
   end ;
 
   (* Workers : Block_validator *)

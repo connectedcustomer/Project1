@@ -162,9 +162,10 @@ let build_rpc_directory validator =
   merge
     (RPC_directory.map
        (fun chain ->
-          Validator.get_exn validator
-            (State.Chain.id chain) >>= fun chain_validator ->
-          Lwt.return (Chain_validator.prevalidator chain_validator))
+          match Validator.get validator (State.Chain.id chain) with
+          | Error _ -> Lwt.fail Not_found
+          | Ok chain_validator ->
+              Lwt.return (Chain_validator.prevalidator chain_validator))
        Prevalidator.rpc_directory) ;
 
   RPC_directory.prefix Chain_services.path @@

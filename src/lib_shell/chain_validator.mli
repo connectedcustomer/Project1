@@ -40,7 +40,7 @@ val create:
   Distributed_db.t ->
   State.Chain.t ->
   limits ->
-  t Lwt.t
+  t tzresult Lwt.t
 
 val bootstrapped: t -> unit Lwt.t
 

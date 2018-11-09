@@ -199,9 +199,9 @@ let create
     (Block_validator.Internal context_index)
     prevalidator_limits
     chain_validator_limits
-  >>= fun validator ->
+  >>=? fun validator ->
   Validator.activate validator
-    ?max_child_ttl ~start_prevalidator mainchain_state >>= fun mainchain_validator ->
+    ?max_child_ttl ~start_prevalidator mainchain_state >>=? fun mainchain_validator ->
   let shutdown () =
     P2p.shutdown p2p >>= fun () ->
     Validator.shutdown validator >>= fun () ->

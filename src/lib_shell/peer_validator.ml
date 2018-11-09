@@ -342,7 +342,7 @@ let on_launch _ name parameters =
   and notify_new_block block =
     pv.last_validated_head <- State.Block.header block ;
     parameters.notify_new_block block in
-  Lwt.return pv
+  return pv
 
 let table =
   let merge w (Worker.Any_request neu) old =

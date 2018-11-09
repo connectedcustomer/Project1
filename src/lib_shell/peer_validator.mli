@@ -43,7 +43,7 @@ val create:
   ?notify_termination: (unit -> unit) ->
   limits ->
   Block_validator.t ->
-  Distributed_db.chain_db -> P2p_peer.Id.t -> t Lwt.t
+  Distributed_db.chain_db -> P2p_peer.Id.t -> t tzresult Lwt.t
 val shutdown: t -> unit Lwt.t
 
 val notify_branch: t -> Block_locator.t -> unit

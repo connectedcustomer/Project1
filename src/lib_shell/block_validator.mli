@@ -37,7 +37,7 @@ type error += Closed of unit
 
 val create:
   limits ->  Distributed_db.t -> validator_kind ->
-  t Lwt.t
+  t tzresult Lwt.t
 
 val validate:
   t ->
