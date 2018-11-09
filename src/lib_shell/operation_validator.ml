@@ -23,22 +23,24 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+(* limits passed on to underlying workers *)
 type limits = {
   mempool_worker_limits : Mempool_worker.limits ;
   mempool_peer_worker_limits : Mempool_peer_worker.limits ;
 }
 
+type recycling = Operation_hash.t list P2p_peer.Id.Map.t
 
+(* Singature for managing protocol existential *)
 type identifier = (Chain_id.t * Protocol_hash.t)
-
 module type T = sig
 
   val identifier: identifier
   val parameters: (limits * Distributed_db.chain_db)
 
   type t
-  val create: unit -> t tzresult Lwt.t
-  val shutdown: t -> unit Lwt.t
+  val create: recycling -> t tzresult Lwt.t
+  val shutdown: t -> recycling Lwt.t
 
   val timestamp: t -> Time.t
 
@@ -50,6 +52,12 @@ module type T = sig
 
 end
 
+(* Wrapping of the module
+ * NOTE: the value `t: 'mt` is kept separate from the moudle `m: (module T with
+ * type t = 'mt)` for error management purpose: initialisation of the value `t`
+ * can fail whereas initialisation of the the module cannot.
+ * NOTE: this is all hidden from the outside so it's not a concern of interface.
+ * *)
 type 'mt pre_t = {
   m : (module T with type t = 'mt) ;
   t : 'mt
@@ -57,9 +65,12 @@ type 'mt pre_t = {
 and t = T : 'mt pre_t -> t
 
 
-(* Global state *)
+(* Global state: associating chain_id/protocol to instances of `t`.
+ * NOTE: because of the composite key (chain_id and protocol) we cannot rely on
+ * one of the pre-made Table. We roll out this one using the standard library's
+ * HashTbl. *)
 module Registry : sig
-  (* A restricted HashTbl with a unique value *)
+  (* A restricted specialised HashTbl with a preapplied unique table *)
   val add: identifier -> t -> unit
   val find_opt: identifier -> t option
   val remove: identifier -> unit
@@ -83,6 +94,7 @@ end = struct
 end
 
 
+(* functor instantiation argument *)
 module type ARG = sig
   val limits: limits
   val chain_db: Distributed_db.chain_db
@@ -113,30 +125,52 @@ module Make(Proto: Registered_protocol.T)(Arg: ARG): T = struct
   let timestamp { timestamp } = timestamp
 
   (* NOTE: Only create a single value. *)
-  let create () =
+  let create recycling =
+    (* Starting the most-underlying worker *)
     Mempool_worker.create Arg.limits.mempool_worker_limits Arg.chain_db
     >>=? fun mempool_worker ->
-    return {
-      timestamp = Time.now () ;
-      mempool_worker ;
-      (* TODO: what's a good default for the init size of the table? *)
-      mempool_peer_workers = P2p_peer.Id.Table.create 16 ;
-    }
-
-  let shutdown t =
-    let mpws =
-      P2p_peer.Id.Table.fold
-        (fun _ mpw acc -> mpw :: acc)
-        t.mempool_peer_workers
+    (* Recycling values *)
+    (* TODO: what's a good default for the init size of the table? *)
+    let size = max 16 (P2p_peer.Id.Map.cardinal recycling) in
+    let mempool_peer_workers = P2p_peer.Id.Table.create size in
+    let recycling_progress =
+      P2p_peer.Id.Map.fold
+        (fun peer input acc ->
+           (Mempool_peer_worker.create
+              Arg.limits.mempool_peer_worker_limits
+              peer
+              mempool_worker
+              input >>= fun mpw ->
+            P2p_peer.Id.Table.add mempool_peer_workers peer mpw;
+            Lwt.return ())
+           :: acc)
+        recycling
         [] in
     Lwt.join (
       List.map
-        (fun mpw ->
-           Mempool_peer_worker.shutdown mpw >>= fun (_: Mempool_peer_worker.input) ->
-           Lwt.return_unit)
-        mpws) >>= fun () ->
+        (fun p -> p >>= fun _ -> Lwt.return_unit)
+        recycling_progress) >>= fun () ->
+    return {
+      timestamp = Time.now () ;
+      mempool_worker ;
+      mempool_peer_workers ;
+    }
+
+  (* We shutdown every underlying worker, but we ignore the *)
+  let shutdown t =
+    let shutdowns =
+      P2p_peer.Id.Table.fold
+        (fun peer mpw acc -> (peer, Mempool_peer_worker.shutdown mpw) :: acc)
+        t.mempool_peer_workers
+        [] in
+    Lwt_list.fold_left_s
+      (fun recycling (peer, input_promise) ->
+         input_promise >>= fun input ->
+         Lwt.return (P2p_peer.Id.Map.add peer input recycling))
+      P2p_peer.Id.Map.empty
+      shutdowns >>= fun recycling ->
     Mempool_worker.shutdown t.mempool_worker >>= fun () ->
-    Lwt.return_unit
+    Lwt.return recycling
 
   let inject t operation =
     Mempool_worker.parse t.mempool_worker operation >>=? fun op ->
@@ -199,7 +233,7 @@ module Make(Proto: Registered_protocol.T)(Arg: ARG): T = struct
 end
 
 
-let create limits (module Proto: Registered_protocol.T) chain_db =
+let create ?(recycling = P2p_peer.Id.Map.empty) limits (module Proto: Registered_protocol.T) chain_db =
   let chain_state = Distributed_db.chain_state chain_db in
   let chain_id = State.Chain.id chain_state in
   match Registry.find_opt (chain_id, Proto.hash) with
@@ -210,7 +244,7 @@ let create limits (module Proto: Registered_protocol.T) chain_db =
           let chain_db = chain_db
           let chain_id = chain_id
         end) in
-      M.create () >>=? fun (t: M.t) ->
+      M.create recycling >>=? fun (t: M.t) ->
       let pre_t: M.t pre_t = { m = (module M) ; t } in
       let t: t = T pre_t in
       Registry.add M.identifier t;
@@ -218,7 +252,7 @@ let create limits (module Proto: Registered_protocol.T) chain_db =
   | Some t ->
       return t
 
-let shutdown_wrap: type mt. mt pre_t -> unit Lwt.t
+let shutdown_wrap: type mt. mt pre_t -> recycling Lwt.t
   = fun pre_t ->
     let module M: T with type t = mt = (val pre_t.m) in
     Registry.remove M.identifier;

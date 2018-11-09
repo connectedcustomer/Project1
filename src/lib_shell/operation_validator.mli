@@ -26,17 +26,20 @@
 
 type t
 
+type recycling
+
 type limits = {
   mempool_worker_limits : Mempool_worker.limits ;
   mempool_peer_worker_limits : Mempool_peer_worker.limits ;
 }
 
 val create:
+  ?recycling:recycling ->
   limits ->
   (module Registered_protocol.T) ->
   Distributed_db.chain_db ->
   t tzresult Lwt.t
-val shutdown: t -> unit Lwt.t
+val shutdown: t -> recycling Lwt.t
 
 val notify_operations: t -> P2p_peer.Id.t -> Mempool.t -> unit tzresult Lwt.t
 
