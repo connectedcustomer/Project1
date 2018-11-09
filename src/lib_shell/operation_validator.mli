@@ -1,5 +1,4 @@
 (*****************************************************************************)
-(*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
 (*                                                                           *)
@@ -23,46 +22,37 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+(* An interface close-enough to prevalidator.mli *)
+
+type t
+
 type limits = {
-  worker_limits : Worker_types.limits ;
+  mempool_worker_limits : Mempool_worker.limits ;
+  mempool_peer_worker_limits : Mempool_peer_worker.limits ;
 }
 
-module type T = sig
+val create:
+  limits ->
+  (module Registered_protocol.T) ->
+  Distributed_db.chain_db ->
+  t tzresult Lwt.t
+val shutdown: t -> unit Lwt.t
 
-  module Proto: Registered_protocol.T
+val notify_operations: t -> P2p_peer.Id.t -> Mempool.t -> unit tzresult Lwt.t
 
-  type t
+val inject_operation: t -> Operation.t -> unit tzresult Lwt.t
 
-  type operation = private {
-    hash: Operation_hash.t ;
-    raw: Operation.t ;
-    protocol_data: Proto.operation_data ;
-  }
+val flush: t -> Block_hash.t -> unit tzresult Lwt.t
 
-  type result =
-    | Applied of Proto.operation_receipt
-    | Branch_delayed of error list
-    | Branch_refused of error list
-    | Refused of error list
-    | Duplicate
-    | Not_in_branch
-  val result_encoding : result Data_encoding.t
+val timestamp: t -> Time.t
 
-  (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Distributed_db.chain_db -> t tzresult Lwt.t
-  val shutdown : t -> unit Lwt.t
+val protocol_hash: t -> Protocol_hash.t
+val parameters: t -> limits * Distributed_db.chain_db
 
-  (** parse a new operation and add it to the mempool context *)
-  val parse : t -> Operation.t -> operation tzresult Lwt.t
 
-  (** validate a new operation and add it to the mempool context *)
-  val validate : t -> operation -> result tzresult Lwt.t
-
-  val chain_db : t -> Distributed_db.chain_db
-
-  val rpc_directory : t RPC_directory.t
-
-end
-
-module Make (Proto : Registered_protocol.T) : T with module Proto = Proto
-
+val operations: t -> error Preapply_result.t * Operation.t Operation_hash.Map.t
+val pending: ?block:State.Block.t -> t -> Operation.t Operation_hash.Map.t Lwt.t
+val running_workers: unit -> (Chain_id.t * Protocol_hash.t * t) list
+val pending_requests : t -> (Time.t * Prevalidator_worker_state.Request.view) list
+val current_request : t -> (Time.t * Time.t * Prevalidator_worker_state.Request.view) option
+val last_events : t -> (Lwt_log_core.level * Prevalidator_worker_state.Event.t list) list
