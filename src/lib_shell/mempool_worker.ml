@@ -529,7 +529,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Operation_hash.Set.iter (fun hash ->
         ParsedCache.rem parsed_cache hash
       ) live_operations;
-    Lwt.return {
+    return {
       validation_state ;
       cache = ValidatedCache.create () ;
       live_blocks ;
@@ -573,12 +573,12 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Chain.data chain_state >>= fun { current_head = predecessor } ->
     let timestamp = Time.now () in
     create ~predecessor ~timestamp () >>=? fun validation_state ->
-    (Worker.launch
-       table
-       limits.worker_limits
-       chain_id
-       { limits ; chain_db ; validation_state }
-       (module Handlers) >>= return)
+    Worker.launch
+      table
+      limits.worker_limits
+      chain_id
+      { limits ; chain_db ; validation_state }
+      (module Handlers)
 
   (* Exporting functions *)
 
