@@ -51,7 +51,7 @@ module type T = sig
   val shutdown : t -> unit Lwt.t
 
   (** parse a new operation and add it to the mempool context *)
-  val parse : Operation.t -> operation tzresult
+  val parse : t -> Operation.t -> operation tzresult
 
   (** validate a new operation and add it to the mempool context *)
   val validate : t -> operation -> result tzresult Lwt.t
@@ -155,7 +155,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   module Request = struct
 
-    type 'a t = Validate : operation -> result t [@@ocaml.unboxed]
+    type 'a t = Validate : operation -> result t
 
     type view = View : _ t -> view
 
@@ -169,7 +169,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
         operation_encoding
 
     let pp ppf (View (Validate { hash })) =
-      Format.fprintf ppf "Validating new operation %a" Operation_hash.pp hash
+      Format.fprintf ppf "New parsed operation hash %a" Operation_hash.pp hash
   end
 
   module Event = struct
@@ -498,7 +498,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
         (* operations are notified only the first time *)
         notify_helper w result parsed_op.raw ;
         Lwt.return result
-    | Some (result,_) -> Lwt.return result
+    | Some result -> Lwt.return result
 
   (* worker's handlers *)
   let on_request :
@@ -511,10 +511,6 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Chain.data chain_state >>= fun {
       current_mempool = _mempool ;
       live_blocks ; live_operations } ->
-    (* remove all operations that are already included *)
-    Operation_hash.Set.iter (fun hash ->
-        ParsedCache.rem parsed_cache hash
-      ) live_operations;
     Lwt.return {
       validation_state ;
       cache = ValidatedCache.create () ;
@@ -572,11 +568,12 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Worker.push_request_and_wait t (Request.Validate parsed_op)
 
   (* atomic parse + memoization *)
-  let parse raw_op =
-    begin match ParsedCache.find_opt parsed_cache raw_op with
+  let parse t raw_op =
+    let state = Worker.state t in
+    begin match Cache.find_parsed_opt state.cache raw_op with
       | None ->
-          let parsed_op = parse_helper raw_op in
-          ParsedCache.add parsed_cache raw_op parsed_op;
+          let parsed_op = parse_helper t raw_op in
+          Cache.add_parsed state.cache raw_op parsed_op;
           parsed_op
       | Some parsed_op -> parsed_op
     end
