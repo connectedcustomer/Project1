@@ -167,7 +167,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   module Request = struct
 
-    type 'a t = Validate : operation -> result t
+    type 'a t = Validate : operation -> result t [@@ocaml.unboxed]
 
     type view = View : _ t -> view
 
@@ -181,7 +181,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
         operation_encoding
 
     let pp ppf (View (Validate { hash })) =
-      Format.fprintf ppf "New parsed operation hash %a" Operation_hash.pp hash
+      Format.fprintf ppf "Validating new operation %a" Operation_hash.pp hash
   end
 
   module Event = struct
