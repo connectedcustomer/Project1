@@ -280,6 +280,17 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
           Operation.encoding
       )
 
+    let pp break ppf table =
+      let open Format in
+      Operation_hash.Table.iter
+        (fun h (r, _) ->
+           fprintf ppf "Operation %a: %a"
+             Operation_hash.pp_short h
+             pp_result r;
+           break ppf
+        )
+        table
+
     let create () = Operation_hash.Table.create 1000
 
     let add t parsed_op result =
