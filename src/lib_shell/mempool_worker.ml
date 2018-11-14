@@ -584,12 +584,12 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Chain.data chain_state >>= fun { current_head = predecessor } ->
     let timestamp = Time.now () in
     create ~predecessor ~timestamp () >>=? fun validation_state ->
-    Worker.launch
-      table
-      limits.worker_limits
-      chain_id
-      { limits ; chain_db ; validation_state }
-      (module Handlers)
+    (Worker.launch
+       table
+       limits.worker_limits
+       chain_id
+       { limits ; chain_db ; validation_state }
+       (module Handlers) >>= return)
 
   (* Exporting functions *)
 
