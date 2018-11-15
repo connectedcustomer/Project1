@@ -221,32 +221,19 @@ module Make(Proto: Registered_protocol.T) : T with module Proto = Proto = struct
   (* parsed operations' cache. used for memoization *)
   module ParsedCache = struct
 
-    type t = operation tzresult Operation_hash.Table.t
+    include BoundedTable.Make(Operation_hash)
 
-    let encoding =
-      (Operation_hash.Table.encoding
-         (Error_monad.result_encoding operation_encoding))
+    let create () = create 1000
 
-    let create () : t =
-      Operation_hash.Table.create 1000
+    let add t raw parsed =
+      let hash = Operation.hash raw in
+      add t hash parsed
 
-    let add t raw_op parsed_op =
-      let hash = Operation.hash raw_op in
-      Operation_hash.Table.replace t hash parsed_op
-
-    let mem t raw_op =
-      let hash = Operation.hash raw_op in
-      Operation_hash.Table.mem t hash
+    let find_hash_opt t hash = find_opt t hash
 
     let find_opt t raw_op =
       let hash = Operation.hash raw_op in
-      Operation_hash.Table.find_opt t hash
-
-    let find_hash_opt t hash =
-      Operation_hash.Table.find_opt t hash
-
-    let rem t hash =
-      Operation_hash.Table.remove t hash
+      find_opt t hash
 
   end
 
@@ -505,10 +492,6 @@ module Make(Proto: Registered_protocol.T) : T with module Proto = Proto = struct
     Chain.data chain_state >>= fun {
       current_mempool = _mempool ;
       live_blocks ; live_operations } ->
-    (* remove all operations that are already included *)
-    Operation_hash.Set.iter (fun hash ->
-        ParsedCache.rem parsed_cache hash
-      ) live_operations;
     Lwt.return {
       validation_state ;
       cache = ValidatedCache.create () ;
