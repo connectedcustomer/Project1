@@ -319,6 +319,24 @@ module Make
 
   end
 
+  (* Ongoing-request cache *)
+  module ValidatingCache = struct
+
+    type t = result Lwt.t Operation_hash.Table.t
+
+    let create () = Operation_hash.Table.create 64
+
+    let add t parsed_op promise =
+      Operation_hash.Table.replace t parsed_op.hash promise
+
+    let find_opt t parsed_op =
+      Operation_hash.Table.find_opt t parsed_op.hash
+
+    let remove t parsed_op =
+      Operation_hash.Table.remove t parsed_op.hash
+
+  end
+
   (* validated operations' cache. used for memoization *)
   module ValidatedCache = struct
 
@@ -434,6 +452,7 @@ module Make
         mutable validation_state : Proto.validation_state ;
 
         cache : ValidatedCache.t ;
+        validating_cache : ValidatingCache.t ;
 
         mutable filter_config : Mempool_filters.config ;
 
@@ -601,9 +620,12 @@ module Make
   let on_validate w parsed_op =
     let state = Worker.state w in
     match ValidatedCache.find_opt state.cache parsed_op with
-    | None | Some ((Branch_delayed _),_) ->
-        validate_helper w parsed_op >>= fun result ->
+    | None | Some (Branch_delayed _, _) ->
+        let result_promise = validate_helper w parsed_op in
+        ValidatingCache.add state.validating_cache parsed_op result_promise;
+        result_promise >>= fun result ->
         ValidatedCache.add state.cache parsed_op (result, parsed_op.raw);
+        ValidatingCache.remove state.validating_cache parsed_op;
         (* operations are notified only the first time *)
         notify_helper w result parsed_op.raw ;
         Lwt.return result
@@ -624,6 +646,7 @@ module Make
       chain = parameters.chain ;
       validation_state = parameters.validation_state ;
       cache = ValidatedCache.create () ;
+      validating_cache = ValidatingCache.create () ;
       filter_config = parameters.filter_config ;
       live_blocks = parameters.head_info.live_blocks ;
       live_operations = parameters.head_info.live_operations ;
@@ -701,7 +724,10 @@ module Make
   (* Exporting functions *)
 
   let validate t parsed_op =
-    Worker.push_request_and_wait t (Request.Validate parsed_op)
+    let state = Worker.state t in
+    match ValidatingCache.find_opt state.validating_cache parsed_op with
+    | Some result_promise -> result_promise >>= return
+    | None -> Worker.push_request_and_wait t (Request.Validate parsed_op)
 
   let update_filter_config t filter_config =
     let state = Worker.state t in
