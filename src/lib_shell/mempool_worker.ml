@@ -62,7 +62,13 @@ module type T = sig
 
 end
 
-module Make(Proto: Registered_protocol.T) : T with module Proto = Proto = struct
+module type STATIC = sig
+  val max_size_parsed_cache: int
+end
+
+module Make(Static: STATIC)(Proto: Registered_protocol.T)
+  : T with module Proto = Proto
+= struct
 
   module Proto = Proto
 
@@ -223,7 +229,7 @@ module Make(Proto: Registered_protocol.T) : T with module Proto = Proto = struct
 
     include BoundedTable.Make(Operation_hash)
 
-    let create () = create 1000
+    let create () = create Static.max_size_parsed_cache
 
     let add t raw parsed =
       let hash = Operation.hash raw in
