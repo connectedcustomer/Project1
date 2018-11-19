@@ -31,7 +31,9 @@ type limits = {
 }
 
 module type T = sig
+  module Proto: Registered_protocol.T
   module Mempool_worker: Mempool_worker.T
+    with module Proto = Proto
 
   (** The type of a peer worker. Each peer worker should be used for treating
    * all the operations from a given peer. *)
@@ -60,6 +62,11 @@ module type T = sig
    * each operation is performed by [mempool_worker]. *)
   val validate: t -> input -> unit tzresult Lwt.t
 
+  (** [status t] is for introspection of workers. Check the return type for
+   * information. *)
+  val status : t -> Worker_types.worker_status
+
+
 end
 
 
@@ -67,5 +74,10 @@ module type STATIC = sig
   val max_pending_requests : int
 end
 
-module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
-  : T with module Mempool_worker = Mempool_worker
+module Make
+    (Static: STATIC)
+    (Proto: Registered_protocol.T)
+    (Mempool_worker: Mempool_worker.T with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Mempool_worker = Mempool_worker
