@@ -59,6 +59,10 @@ module type T = sig
 
   val chain_db : t -> Distributed_db.chain_db
 
+  val fitness : t -> Fitness.t tzresult Lwt.t
+
+  val status : t -> Worker_types.worker_status
+
   val rpc_directory : t RPC_directory.t
 
 end
@@ -605,6 +609,13 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
   let chain_db t =
     let state = Worker.state t in
     state.parameters.chain_db
+
+  let fitness t =
+    let state = Worker.state t in
+    Proto.finalize_block state.validation_state >>=? fun (block_result, _) ->
+    return block_result.fitness
+
+  let status t = Worker.status t
 
   let pending_rpc_directory : t RPC_directory.t =
     RPC_directory.gen_register
