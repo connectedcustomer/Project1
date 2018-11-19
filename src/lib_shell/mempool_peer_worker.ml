@@ -33,7 +33,9 @@ type limits = {
 }
 
 module type T = sig
+  module Proto: Registered_protocol.T
   module Mempool_worker: Mempool_worker.T
+    with module Proto = Proto
 
   type t
   type input = Operation_hash.t list
@@ -43,6 +45,8 @@ module type T = sig
 
   val validate: t -> input -> unit tzresult Lwt.t
 
+  val status: t -> Worker_types.worker_status
+
 end
 
 
@@ -50,8 +54,13 @@ module type STATIC = sig
   val max_pending_requests : int
 end
 
-module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
-  : T with module Mempool_worker = Mempool_worker
+module Make
+    (Static: STATIC)
+    (Proto: Registered_protocol.T)
+    (Mempool_worker: Mempool_worker.T with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Mempool_worker = Mempool_worker
 = struct
 
   (* 0. Prelude: set up base modules and types *)
@@ -412,5 +421,7 @@ module Make (Static: STATIC) (Mempool_worker: Mempool_worker.T)
     let input = Operation_hash.Set.elements recycled in
     Worker.shutdown w >>= fun () ->
     Lwt.return input
+
+  let status t = Worker.status t
 
 end
