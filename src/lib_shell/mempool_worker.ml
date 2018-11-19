@@ -1,4 +1,5 @@
 (*****************************************************************************)
+(*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
 (* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
@@ -59,6 +60,10 @@ module type T = sig
   val validate : t -> operation -> result tzresult Lwt.t
 
   val chain_db : t -> Distributed_db.chain_db
+
+  val fitness : t -> Fitness.t tzresult Lwt.t
+
+  val status : t -> Worker_types.worker_status
 
   val rpc_directory : t RPC_directory.t
 
@@ -606,6 +611,13 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
   let chain_db t =
     let state = Worker.state t in
     state.parameters.chain_db
+
+  let fitness t =
+    let state = Worker.state t in
+    Proto.finalize_block state.validation_state >>=? fun (block_result, _) ->
+    return block_result.fitness
+
+  let status t = Worker.status t
 
   let pending_rpc_directory : t RPC_directory.t =
     RPC_directory.gen_register
