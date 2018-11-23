@@ -34,6 +34,10 @@ type limits = {
   peer_worker_max_pending_requests: int ;
 }
 
+(* This is equivalent to `Mempool_peer_worker.input P2p_peer.Id.Map.t` but
+   independent of any instantiation of `Mempool_peer_worker`. *)
+type recycling = Operation_hash.t list P2p_peer.Id.Map.t
+
 
 (** Types for the mempool_validator instantiated values: first-class module that
     wraps in the Proto and derived modules and holds the needed instantiated
@@ -56,8 +60,8 @@ module type T = sig
   val map_mempool_peer_workers:
     (Mempool_peer_worker.t -> 'a) -> 'a P2p_peer.Id.Map.t
 
-  val recycle : Mempool_peer_worker.input P2p_peer.Map.t -> unit Lwt.t
-  val shutdown : unit -> Mempool_peer_worker.input P2p_peer.Map.t Lwt.t
+  val recycle : recycling -> unit Lwt.t
+  val shutdown : unit -> recycling Lwt.t
   val new_head : 'a -> unit tzresult Lwt.t
 
   (* boilerplate configuration variables *)
@@ -68,10 +72,6 @@ end
 
 type t = (module T)
 
-
-(* This is equivalent to `Mempool_peer_worker.input P2p_peer.Id.Map.t` but
- * independent of any instantiation of `Mempool_peer_worker`. *)
-type recycling = Operation_hash.t list P2p_peer.Id.Map.t
 
 
 (** To create T modules (which become t values) we use a functor that takes PRE.
@@ -115,32 +115,39 @@ module Create (Pre : PRE) : T = struct
   let mempool_worker_ref = ref mempool_worker
   let get_mempool_worker () = !mempool_worker_ref
 
-  let mempool_peer_workers = ref P2p_peer.Id.Map.empty
+  (* Typical number of connected peers: 10-100 *)
+  let mempool_peer_workers = P2p_peer.Id.Table.create 64
 
   let get_mempool_peer_worker peer_id =
-    match P2p_peer.Id.Map.find_opt peer_id !mempool_peer_workers with
+    match P2p_peer.Id.Table.find_opt mempool_peer_workers peer_id with
     | Some mpw -> return mpw
     | None ->
+        assert (not (P2p_peer.Id.Table.mem mempool_peer_workers peer_id)) ;
         Mempool_peer_worker.create
           limits.peer_worker_limits
           peer_id
           !mempool_worker_ref >>=? fun mpw ->
-        mempool_peer_workers := P2p_peer.Id.Map.add peer_id mpw !mempool_peer_workers;
+        P2p_peer.Id.Table.add mempool_peer_workers peer_id mpw ;
         return mpw
   let clear_mempool_peer_workers () =
-    mempool_peer_workers := P2p_peer.Id.Map.empty
+    P2p_peer.Id.Table.clear mempool_peer_workers
   let map_mempool_peer_workers f =
-    P2p_peer.Id.Map.map f !mempool_peer_workers
+    P2p_peer.Id.Table.fold
+      (fun peer_id mpw acc ->
+         assert (not (P2p_peer.Id.Map.mem peer_id acc)) ;
+         P2p_peer.Id.Map.add peer_id (f mpw) acc)
+      mempool_peer_workers
+      P2p_peer.Id.Map.empty
 
   let shutdown () =
     begin
       (* collect recycling, first as a list of promises, then as a promise of map *)
-      P2p_peer.Id.Map.fold
+      P2p_peer.Id.Table.fold
         (fun peer_id mpw acc ->
            (Mempool_peer_worker.shutdown mpw >>= fun r ->
             Lwt.return (peer_id, r))
            :: acc)
-        !mempool_peer_workers
+        mempool_peer_workers
         [] |>
       Lwt_list.fold_left_s
         (fun acc p ->
