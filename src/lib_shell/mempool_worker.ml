@@ -145,8 +145,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       (fun ( hash, raw, protocol_data ) -> { hash ; raw ; protocol_data })
       (obj3
          (req "hash" Operation_hash.encoding)
-         (req "raw" Operation.encoding)
-         (req "protocol_data" Proto.operation_data_encoding)
+         (req "raw" (dynamic_size Operation.encoding))
+         (req "protocol_data" (dynamic_size Proto.operation_data_encoding))
       )
 
   module Log = Tezos_stdlib.Logging.Make(struct
@@ -178,7 +178,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       conv
         (fun (View (Validate op)) -> op)
         (fun op -> View (Validate op))
-        operation_encoding
+        (dynamic_size operation_encoding)
 
     let pp ppf (View (Validate { hash })) =
       Format.fprintf ppf "Validating new operation %a" Operation_hash.pp hash
@@ -277,7 +277,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       Operation_hash.Table.encoding (
         tup2
           result_encoding
-          Operation.encoding
+          (dynamic_size Operation.encoding)
       )
 
     let pp break ppf table =
