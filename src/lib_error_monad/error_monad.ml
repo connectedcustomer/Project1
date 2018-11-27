@@ -366,6 +366,39 @@ module Make(Prefix : sig val id : string end) = struct
 
   let (>|?) v f = v >>? fun v -> Ok (f v)
 
+  let iter_err f t =
+    t >>= function
+    | Ok _ -> t
+    | Error errs -> f errs; t
+  let iter_err_p f t =
+    t >>= function
+    | Ok _ -> t
+    | Error errs -> f errs >>= fun () -> t
+  let attempt_recovery f t =
+    t >>= function
+    | Ok _ -> t
+    | Error errs ->
+        let tt = f errs in
+        match tt with
+        | Ok _ -> Lwt.return tt
+        | Error more_errs -> Lwt.return (Error (more_errs @ errs))
+  let attempt_recovery_p f t =
+    t >>= function
+    | Ok _ -> t
+    | Error errs ->
+        let tt = f errs in
+        tt >>= function
+        | Ok _ -> tt
+        | Error more_errs -> Lwt.return (Error (more_errs @ errs))
+  let recover f t =
+    t >>= function
+    | Ok v -> Lwt.return v
+    | Error errs -> Lwt.return (f errs)
+  let recover_p f t =
+    t >>= function
+    | Ok v -> Lwt.return v
+    | Error errs -> f errs
+
   let rec map_s f l =
     match l with
     | [] -> return_nil

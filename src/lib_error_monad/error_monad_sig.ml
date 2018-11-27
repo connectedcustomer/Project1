@@ -120,6 +120,15 @@ module type S = sig
   (** Erroneous return *)
   val fail : error -> 'a tzresult Lwt.t
 
+  (** Combinators to act solely on errors. They all leave Ok results untouched.
+      Intended use: [<exp> |> <combinator> <arguments>]. *)
+  val iter_err : (error list -> unit) -> 'a tzresult Lwt.t -> 'a tzresult Lwt.t
+  val iter_err_p : (error list -> unit Lwt.t) -> 'a tzresult Lwt.t -> 'a tzresult Lwt.t
+  val attempt_recovery : (error list -> 'a tzresult) -> 'a tzresult Lwt.t -> 'a tzresult Lwt.t
+  val attempt_recovery_p : (error list -> 'a tzresult Lwt.t) -> 'a tzresult Lwt.t -> 'a tzresult Lwt.t
+  val recover : (error list -> 'a) -> 'a tzresult Lwt.t -> 'a Lwt.t
+  val recover_p : (error list -> 'a Lwt.t) -> 'a tzresult Lwt.t -> 'a Lwt.t
+
   (** Non-Lwt bind operator *)
   val (>>?) : 'a tzresult -> ('a -> 'b tzresult) -> 'b tzresult
 
