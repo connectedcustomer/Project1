@@ -78,3 +78,5 @@ val chain_db: t -> Distributed_db.chain_db
 
 
 val status: t -> Worker_types.worker_status * Worker_types.worker_status P2p_peer.Id.Map.t
+
+val rpc_directory : t option RPC_directory.t

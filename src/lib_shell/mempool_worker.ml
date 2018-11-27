@@ -32,6 +32,9 @@ module type T = sig
 
   module Proto: Registered_protocol.T
 
+  module Proto_services : (module type of Block_services.Make(Proto)(Proto))
+  module Worker : Worker.T
+
   type t
 
   type operation = private {
@@ -64,6 +67,13 @@ module type T = sig
   val fitness : t -> Fitness.t tzresult Lwt.t
 
   val status : t -> Worker_types.worker_status
+
+  val pending_operations : t -> Proto_services.Mempool.t
+
+  val monitor_operations : t ->
+    < applied : bool; branch_delayed : bool; branch_refused :
+        bool; refused : bool; .. > ->
+    (unit -> Proto.operation list option Lwt.t) * (unit -> unit)
 
   val rpc_directory : t RPC_directory.t
 
@@ -619,43 +629,46 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   let status t = Worker.status t
 
-  let pending_rpc_directory : t RPC_directory.t =
-    RPC_directory.gen_register
-      RPC_directory.empty
+  let pending_operations : t -> Proto_services.Mempool.t = fun t ->
+    let state = Worker.state t in
+    ValidatedCache.to_mempool state.cache
+
+  let monitor_operations = fun t params ->
+    let state = Worker.state t in
+    let filter_result = function
+      | Applied _ -> params#applied
+      | Refused _ -> params#branch_refused
+      | Branch_refused _ -> params#refused
+      | Branch_delayed _ -> params#branch_delayed
+      | _ -> false in
+
+    let op_stream, stopper = Lwt_watcher.create_stream state.operation_stream in
+    let shutdown () = Lwt_watcher.shutdown stopper in
+    let next () =
+      Lwt_stream.get op_stream >>= function
+      | Some (kind, shell, protocol_data) when filter_result kind ->
+          Lwt.return_some [ { Proto.shell ; protocol_data } ]
+      | _ -> Lwt.return_none in
+    ( next, shutdown )
+
+  let rpc_directory : t RPC_directory.t =
+    RPC_directory.empty |> fun dir ->
+    RPC_directory.gen_register dir
       (Proto_services.S.Mempool.pending_operations RPC_path.open_root)
-      (fun w () () ->
-         let state = Worker.state w in
-         RPC_answer.return (ValidatedCache.to_mempool state.cache)
-      )
-
-  let monitor_rpc_directory : t RPC_directory.t =
-    RPC_directory.gen_register
-      RPC_directory.empty
+      (fun t () () ->
+         let mempool_t = pending_operations t in
+         RPC_answer.return mempool_t) |> fun dir ->
+    RPC_directory.gen_register dir
       (Proto_services.S.Mempool.monitor_operations RPC_path.open_root)
-      (fun w params () ->
-         let state = Worker.state w in
-         let filter_result = function
-           | Applied _ -> params#applied
-           | Refused _ -> params#branch_refused
-           | Branch_refused _ -> params#refused
-           | Branch_delayed _ -> params#branch_delayed
-           | _ -> false in
-
-         let op_stream, stopper = Lwt_watcher.create_stream state.operation_stream in
-         let shutdown () = Lwt_watcher.shutdown stopper in
-         let next () =
-           Lwt_stream.get op_stream >>= function
-           | Some (kind, shell, protocol_data) when filter_result kind ->
-               Lwt.return_some [ { Proto.shell ; protocol_data } ]
-           | _ -> Lwt.return_none in
-         RPC_answer.return_stream { next ; shutdown }
-      )
-
-  (* /mempool/<chain_id>/pending
-     /mempool/<chain_id>/monitor *)
-  let rpc_directory =
-    RPC_directory.merge
-      pending_rpc_directory
-      monitor_rpc_directory
+      (fun t param () ->
+         let next,shutdown = monitor_operations t param in
+         RPC_answer.return_stream { next ; shutdown }) |> fun dir ->
+    RPC_directory.gen_register dir
+      (Proto_services.S.Mempool.request_operations RPC_path.open_root)
+      (fun _t () () ->
+         (* TODO? *)
+         RPC_answer.return_unit
+      ) ;
 
 end
+
