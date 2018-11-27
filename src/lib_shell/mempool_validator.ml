@@ -261,3 +261,30 @@ let status (module M : T) =
   let mws = M.Mempool_worker.status (M.get_mempool_worker ())in
   let mpwss = M.map_mempool_peer_workers M.Mempool_peer_worker.status in
   (mws, mpwss)
+
+
+let empty_rpc_directory : unit RPC_directory.t =
+  RPC_directory.register
+    RPC_directory.empty
+    (Block_services.Empty.S.Mempool.pending_operations RPC_path.open_root)
+    (fun _pv () () ->
+       return {
+         Block_services.Empty.Mempool.applied = [] ;
+         refused = Operation_hash.Map.empty ;
+         branch_refused = Operation_hash.Map.empty ;
+         branch_delayed = Operation_hash.Map.empty ;
+         unprocessed = Operation_hash.Map.empty ;
+       })
+
+let rpc_directory : t option RPC_directory.t =
+  RPC_directory.register_dynamic_directory
+    RPC_directory.empty
+    (Block_services.mempool_path RPC_path.open_root)
+    (function
+      | None ->
+          Lwt.return (RPC_directory.map (fun _ -> Lwt.return_unit) empty_rpc_directory)
+      | Some (module M : T) ->
+          Lwt.return
+            (RPC_directory.map
+               (fun _ -> Lwt.return (M.get_mempool_worker ()))
+               M.Mempool_worker.rpc_directory))
