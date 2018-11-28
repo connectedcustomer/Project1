@@ -94,6 +94,15 @@ module Invalid_blocks : sig
 
 end
 
+module Distributed_db : sig
+
+  val request_operations:
+    #simple ->
+    ?chain:chain ->
+    unit -> unit tzresult Lwt.t
+
+end
+
 module S : sig
 
   val chain_id:
@@ -130,6 +139,15 @@ module S : sig
       ([ `DELETE ], prefix,
        prefix * Block_hash.t, unit, unit,
        unit) RPC_service.t
+
+  end
+
+  module Distributed_db : sig
+
+    val request_operations :
+      ('a, 'b) RPC_path.t ->
+      ([ `POST ], 'a,
+       'b , unit, unit, unit) RPC_service.t
 
   end
 

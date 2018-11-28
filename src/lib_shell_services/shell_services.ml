@@ -30,6 +30,7 @@ module Chain = Chain_services
 module Blocks = Chain.Blocks
 module Invalid_blocks = Chain.Invalid_blocks
 module Mempool = Chain.Mempool
+module Distributed_db = Chain.Distributed_db
 
 module Protocol = Protocol_services
 
