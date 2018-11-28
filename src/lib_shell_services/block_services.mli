@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -260,12 +261,6 @@ module Make(Proto : PROTO)(Next_proto : PROTO) : sig
       ?branch_refused:bool ->
       ?refused:bool ->
       unit -> (Next_proto.operation list Lwt_stream.t * stopper) tzresult Lwt.t
-
-    val request_operations:
-      #simple ->
-      ?chain:chain ->
-      unit -> unit tzresult Lwt.t
-
   end
 
   val live_blocks:
@@ -421,12 +416,6 @@ module Make(Proto : PROTO)(Next_proto : PROTO) : sig
            branch_refused : bool ; refused : bool ; >,
          unit,
          Next_proto.operation list) RPC_service.t
-
-      val request_operations :
-        ('a, 'b) RPC_path.t ->
-        ([ `POST ], 'a,
-         'b , unit, unit, unit) RPC_service.t
-
     end
 
     val live_blocks:

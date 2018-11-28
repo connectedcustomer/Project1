@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -282,7 +283,7 @@ let trim_manager_operations ~max_size ~hard_gas_limit_per_block manager_operatio
     - 1 -> Votes and proposals
     - 2 -> Anonymous operations
     - 3 -> High-priority manager operations.
-    Returns two list :
+      Returns two list :
     - A desired set of operations to be included
     - Potentially overflowing operations *)
 let classify_operations
@@ -814,7 +815,7 @@ let fetch_operations
             -% a timestamp_tag limit_date
             -% a timespan_tag (max 0L Time.(diff limit_date (now ())))
           ) >>= fun () ->
-        Shell_services.Mempool.request_operations cctxt ~chain () >>=? fun () ->
+        Shell_services.Distributed_db.request_operations cctxt ~chain () >>=? fun () ->
         let timeout = match Client_baking_scheduling.sleep_until limit_date with
           | None -> Lwt.return_unit
           | Some timeout -> timeout in
@@ -1158,7 +1159,7 @@ let get_unrevealed_nonces
       (* If some nonces are to be revealed it means :
          - We entered a new cycle and we can clear old nonces ;
          - A revelation was not included yet in the cycle beggining.
-         So, it is safe to only filter outdated_nonces there *)
+           So, it is safe to only filter outdated_nonces there *)
       filter_outdated_nonces cctxt ~chain head >>=? fun () ->
       return x
 

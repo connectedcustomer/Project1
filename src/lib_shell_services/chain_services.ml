@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -43,6 +44,7 @@ type invalid_block = {
 
 type prefix = Block_services.chain_prefix
 let path = Block_services.chain_path
+let distributed_db_path p = RPC_path.(p / "distributed_db")
 
 let invalid_block_encoding =
   conv
@@ -135,6 +137,17 @@ module S = struct
 
   end
 
+  module Distributed_db = struct
+
+    let request_operations path =
+      RPC_service.post_service
+        ~description:"Request the operations of your peers."
+        ~input: Data_encoding.empty
+        ~query: RPC_query.empty
+        ~output: Data_encoding.empty
+        RPC_path.(path / "request_operations")
+  end
+
 end
 
 let make_call0 s ctxt chain q p =
@@ -177,6 +190,15 @@ module Blocks = struct
 end
 
 module Mempool = Block_services.Empty.Mempool
+
+module Distributed_db = struct
+
+  let request_operations ctxt ?(chain = `Main) () =
+    let s = S.Distributed_db.request_operations (distributed_db_path path) in
+    RPC_context.make_call1 s ctxt chain () ()
+
+end
+
 
 module Invalid_blocks = struct
 
