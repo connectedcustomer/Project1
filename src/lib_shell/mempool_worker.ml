@@ -662,13 +662,6 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       (Proto_services.S.Mempool.monitor_operations RPC_path.open_root)
       (fun t param () ->
          let next,shutdown = monitor_operations t param in
-         RPC_answer.return_stream { next ; shutdown }) |> fun dir ->
-    RPC_directory.gen_register dir
-      (Proto_services.S.Mempool.request_operations RPC_path.open_root)
-      (fun _t () () ->
-         (* TODO? *)
-         RPC_answer.return_unit
-      ) ;
+         RPC_answer.return_stream { next ; shutdown }) ;
 
 end
-

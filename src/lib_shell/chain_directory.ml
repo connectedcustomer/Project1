@@ -24,8 +24,6 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-open Chain_services
-
 let get_chain_id state = function
   | `Main -> Lwt.return (State.Chain.main state)
   | `Test -> begin
@@ -97,7 +95,7 @@ let list_blocks chain_state ?(length = 1) ?min_date heads =
   return (List.rev blocks)
 
 let rpc_directory =
-
+  let open Chain_services in
   let dir : State.Chain.t RPC_directory.t ref =
     ref RPC_directory.empty in
 
@@ -156,6 +154,17 @@ let build_rpc_directory validator =
   let state = Distributed_db.state distributed_db in
 
   let dir = ref rpc_directory in
+
+  (* Ditributed_db *)
+  dir := RPC_directory.register !dir
+      (Chain_services.S.Distributed_db.request_operations RPC_path.open_root)
+      (fun chain () () ->
+         let chain_db = Option.unopt_exn Not_found
+             (Distributed_db.get_chain distributed_db (State.Chain.id chain)) in
+         Distributed_db.Request.current_head chain_db () ;
+         return_unit
+      ) ;
+
 
   (* Mempool *)
 

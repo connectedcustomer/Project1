@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
+(* Copyright (c) 2018 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -30,6 +31,7 @@ module Chain = Chain_services
 module Blocks = Chain.Blocks
 module Invalid_blocks = Chain.Invalid_blocks
 module Mempool = Chain.Mempool
+module Distributed_db = Chain.Distributed_db
 
 module Protocol = Protocol_services
 
