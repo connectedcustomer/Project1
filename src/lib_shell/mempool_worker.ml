@@ -66,13 +66,6 @@ module type T = sig
 
   val status : t -> Worker_types.worker_status
 
-  val pending_operations : t -> Proto_services.Mempool.t
-
-  val monitor_operations : t ->
-    < applied : bool; branch_delayed : bool; branch_refused :
-        bool; refused : bool; .. > ->
-    (unit -> Proto.operation list option Lwt.t) * (unit -> unit)
-
   val rpc_directory : t RPC_directory.t
 
 end
