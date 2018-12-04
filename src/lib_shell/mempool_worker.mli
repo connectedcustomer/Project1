@@ -53,7 +53,7 @@ module type T = sig
   val result_encoding : result Data_encoding.t
 
   (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Distributed_db.chain_db -> t tzresult Lwt.t
+  val create : limits -> Mempool_helpers.chain -> t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** parse a new operation *)
@@ -62,7 +62,7 @@ module type T = sig
   (** validate a new operation and add it to the mempool context *)
   val validate : t -> operation -> result tzresult Lwt.t
 
-  val chain_db : t -> Distributed_db.chain_db
+  val chain : t -> Mempool_helpers.chain
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 

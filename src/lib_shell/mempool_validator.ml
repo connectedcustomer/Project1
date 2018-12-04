@@ -66,7 +66,7 @@ module type T = sig
 
   (* boilerplate configuration variables *)
   val limits: limits
-  val chain_db: Distributed_db.chain_db
+  val chain: Mempool_helpers.chain
 
 end
 
@@ -99,7 +99,7 @@ module type PRE = sig
     with module Proto = Proto
   val mempool_worker: Mempool_worker.t
   val limits: limits
-  val chain_db: Distributed_db.chain_db
+  val chain: Mempool_helpers.chain
 end
 
 module Create (Pre : PRE) : T = struct
@@ -174,7 +174,7 @@ module Create (Pre : PRE) : T = struct
 
   let new_head _head =
     shutdown () >>= fun recycling ->
-    Mempool_worker.create limits.worker_limits chain_db >>=? fun mw ->
+    Mempool_worker.create limits.worker_limits chain >>=? fun mw ->
     mempool_worker_ref := mw;
     recycle recycling >>= fun () ->
     return_unit
@@ -187,18 +187,20 @@ end
    these reasons, a function (rather than a functor) is necessary. *)
 let create limits (module Proto: Registered_protocol.T) chain_db =
 
+  let chain = Mempool_helpers.chain chain_db in
+
   let module Mempool_worker =
     Mempool_worker.Make
       (struct let max_size_parsed_cache = limits.worker_max_size_parsed_cache end)
       (Proto) in
-  Mempool_worker.create limits.worker_limits chain_db >>=? fun mempool_worker ->
+  Mempool_worker.create limits.worker_limits chain >>=? fun mempool_worker ->
 
   let module Pre : PRE = struct
     module Proto = Proto
     module Mempool_worker = Mempool_worker
     let mempool_worker = mempool_worker
     let limits = limits
-    let chain_db = chain_db
+    let chain = chain
   end in
   let module M : T = Create(Pre) in
 
@@ -254,7 +256,7 @@ let new_head (module M : T) _head =
 let fitness (module M : T) = M.Mempool_worker.fitness (M.get_mempool_worker ())
 let protocol_hash (module M : T) = M.Proto.hash
 let limits (module M : T) = M.limits
-let chain_db (module M : T) = M.chain_db
+let chain (module M : T) = M.chain
 
 
 let status (module M : T) =
