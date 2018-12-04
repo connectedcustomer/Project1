@@ -35,4 +35,7 @@ val chain : Distributed_db.chain_db -> chain
 type block = {
   hash : Block_hash.t ;
   state : State.Block.t ;
+  header : Block_header.t ;
 }
+
+val head_of_chain : chain -> block Lwt.t
