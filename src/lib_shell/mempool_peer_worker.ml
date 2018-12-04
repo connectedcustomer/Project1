@@ -218,10 +218,10 @@ module Make
       else if (not (Queue.is_empty pipeline.received)) then begin
         let op_hash = Queue.pop pipeline.received in
         (* TODO[?] should we specify the current peer for fetching? *)
-        let chain_db = Mempool_worker.chain_db mempool_worker in
+        let chain = Mempool_worker.chain mempool_worker in
         let p =
           Lwt_pool.use pipeline.pool (fun () ->
-              Distributed_db.Operation.fetch chain_db op_hash ()) in
+              Distributed_db.Operation.fetch chain.db op_hash ()) in
         Queue.push (op_hash, p) pipeline.downloading;
         Lwt.return_unit
       end

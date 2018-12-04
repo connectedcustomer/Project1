@@ -23,60 +23,16 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Tezos Shell - Validating mempool as they are gossiped on the network *)
 
-
-type limits = {
-  worker_limits: Mempool_worker.limits ;
-  worker_max_size_parsed_cache: int ;
-  peer_worker_limits: Mempool_peer_worker.limits ;
-  peer_worker_max_pending_requests: int ;
+type chain = {
+  id : Chain_id.t ;
+  db : Distributed_db.chain_db ;
+  state : State.Chain.t ;
 }
 
-(** A mempool validator. *)
-type t
+val chain : Distributed_db.chain_db -> chain
 
-
-(** Recycling: left overs that might or might not be reusable across
-    shutdown/restart. The main aim behind recycling is to let the chain_validator
-    try to insert left over operations after a protocol change. Some operations
-    might become unparsable or invalid, but others might be valid. *)
-type recycling
-
-(** Creates/tear-down a new prevalidator context. *)
-val create:
-  limits ->
-  (module Registered_protocol.T) ->
-  Distributed_db.chain_db ->
-  t tzresult Lwt.t
-
-val shutdown: t -> recycling Lwt.t
-
-val recycle: t -> recycling -> unit Lwt.t
-
-
-(** Common direct interactions *)
-
-val validate: t -> P2p_peer.Id.t -> Mempool.t -> unit Lwt.t
-
-val inject: t -> Operation.t -> unit tzresult Lwt.t
-
-val new_head: t -> Block_hash.t -> unit tzresult Lwt.t
-
-
-(** Some introspection useful to the chain_validator*)
-
-(** Returns the fitness of the current prevalidation context *)
-val fitness: t -> Fitness.t tzresult Lwt.t
-
-(** Returns the hash of the protocol the prevalidator was instantiated with *)
-val protocol_hash: t -> Protocol_hash.t
-
-(** Returns the parameters the prevalidator was created with. *)
-val limits: t -> limits
-val chain: t -> Mempool_helpers.chain
-
-
-val status: t -> Worker_types.worker_status * Worker_types.worker_status P2p_peer.Id.Map.t
-
-val rpc_directory : t option RPC_directory.t
+type block = {
+  hash : Block_hash.t ;
+  state : State.Block.t ;
+}
