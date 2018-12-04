@@ -52,7 +52,7 @@ module type T = sig
   val result_encoding : result Data_encoding.t
 
   (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Distributed_db.chain_db -> t tzresult Lwt.t
+  val create : limits -> Mempool_helpers.chain -> t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** parse a new operation and add it to the mempool context *)
@@ -61,7 +61,7 @@ module type T = sig
   (** validate a new operation and add it to the mempool context *)
   val validate : t -> operation -> result tzresult Lwt.t
 
-  val chain_db : t -> Distributed_db.chain_db
+  val chain : t -> Mempool_helpers.chain
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 
@@ -364,7 +364,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
     type parameters = {
       limits : limits ;
-      chain_db : Distributed_db.chain_db ;
+      chain : Mempool_helpers.chain ;
       validation_state : Proto.validation_state ;
     }
 
@@ -535,9 +535,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     match request with
     | Request.Validate parsed_op -> on_validate w parsed_op >>= return
 
-  let on_launch (_ : t) (_ : Name.t) ( { chain_db ; validation_state } as parameters ) =
-    let chain_state = Distributed_db.chain_state chain_db in
-    Chain.data chain_state >>= fun {
+  let on_launch (_ : t) (_ : Name.t) ( { chain ; validation_state } as parameters ) =
+    Chain.data chain.state >>= fun {
       current_mempool = _mempool ;
       live_blocks ; live_operations } ->
     (* remove all operations that are already included *)
@@ -558,7 +557,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     Lwt_watcher.shutdown_input state.operation_stream;
     ValidatedCache.iter (fun hash _ ->
         Distributed_db.Operation.clear_or_cancel
-          state.parameters.chain_db hash)
+          state.parameters.chain.db hash)
       state.cache ;
     ValidatedCache.clear state.cache;
     Lwt.return_unit
@@ -573,9 +572,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   let table = Worker.create_table Queue
 
-  let create limits chain_db  =
-    let chain_state = Distributed_db.chain_state chain_db in
-    let chain_id = State.Chain.id chain_state in
+  let create limits (chain: Mempool_helpers.chain)  =
     let module Handlers = struct
       type self = t
       let on_launch = on_launch
@@ -585,14 +582,14 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       let on_no_request _ = return_unit
       let on_request = on_request
     end in
-    Chain.data chain_state >>= fun { current_head = predecessor } ->
+    Chain.data chain.Mempool_helpers.state >>= fun { current_head = predecessor } ->
     let timestamp = Time.now () in
     create ~predecessor ~timestamp () >>=? fun validation_state ->
     Worker.launch
       table
       limits.worker_limits
-      chain_id
-      { limits ; chain_db ; validation_state }
+      chain.Mempool_helpers.id
+      { limits ; chain ; validation_state }
       (module Handlers)
 
   (* Exporting functions *)
@@ -610,9 +607,9 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       | Some parsed_op -> parsed_op
     end
 
-  let chain_db t =
+  let chain t =
     let state = Worker.state t in
-    state.parameters.chain_db
+    state.parameters.chain
 
   let fitness t =
     let state = Worker.state t in
