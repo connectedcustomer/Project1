@@ -38,4 +38,12 @@ let chain db =
 type block = {
   hash : Block_hash.t ;
   state : State.Block.t ;
+  header : Block_header.t ;
 }
+
+let head_of_chain (chain: chain) =
+  Chain.data chain.state >>= fun { current_head = state } ->
+  let header = State.Block.header state in
+  let hash = State.Block.hash state in
+  Lwt.return { hash ; state ; header }
+

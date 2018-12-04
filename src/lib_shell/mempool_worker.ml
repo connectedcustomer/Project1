@@ -427,14 +427,12 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
   (*** prevalidation ****)
   open Validation_errors
 
-  let create ?protocol_data ~predecessor ~timestamp () =
-    let { Block_header.shell =
-            { fitness = predecessor_fitness ;
-              timestamp = predecessor_timestamp ;
-              level = predecessor_level } } =
-      State.Block.header predecessor in
-    State.Block.context predecessor >>= fun predecessor_context ->
-    let predecessor_hash = State.Block.hash predecessor in
+  let create ?protocol_data ~(block:Mempool_helpers.block) ~timestamp () =
+    let predecessor_fitness = block.header.shell.fitness in
+    let predecessor_timestamp = block.header.shell.timestamp in
+    let predecessor_level = block.header.shell.level in
+    let predecessor_hash = block.hash in
+    State.Block.context block.state >>= fun predecessor_context ->
     Context.reset_test_chain
       predecessor_context predecessor_hash
       timestamp >>= fun predecessor_context ->
@@ -454,7 +452,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
           | Some protocol_data -> return_some protocol_data
     end >>=? fun protocol_data ->
     Proto.begin_construction
-      ~chain_id: (State.Block.chain_id predecessor)
+      ~chain_id: (State.Block.chain_id block.state)
       ~predecessor_context
       ~predecessor_timestamp
       ~predecessor_fitness
@@ -582,9 +580,9 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       let on_no_request _ = return_unit
       let on_request = on_request
     end in
-    Chain.data chain.Mempool_helpers.state >>= fun { current_head = predecessor } ->
+    Mempool_helpers.head_of_chain chain >>= fun block ->
     let timestamp = Time.now () in
-    create ~predecessor ~timestamp () >>=? fun validation_state ->
+    create ~block ~timestamp () >>=? fun validation_state ->
     Worker.launch
       table
       limits.worker_limits
