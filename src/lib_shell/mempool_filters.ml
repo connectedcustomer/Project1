@@ -30,7 +30,10 @@ module type T = sig
   val default_config : config
   module Proto : Registered_protocol.T
   val pre_filter : config -> Proto.operation_data -> bool
-  val post_filter : config -> Proto.operation_data * Proto.operation_receipt -> bool
+  val post_filter : config ->
+    validation_state_before: Proto.validation_state ->
+    validation_state_after: Proto.validation_state ->
+    Proto.operation_data * Proto.operation_receipt -> bool Lwt.t
 end
 
 let table : (module T) Protocol_hash.Table.t =

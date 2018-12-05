@@ -45,7 +45,10 @@ module type T = sig
   val pre_filter : config -> Proto.operation_data -> bool
 
   (** Tells if an operation should be kept and propagated considering its result. *)
-  val post_filter : config -> Proto.operation_data * Proto.operation_receipt -> bool
+  val post_filter : config ->
+    validation_state_before: Proto.validation_state ->
+    validation_state_after: Proto.validation_state ->
+    Proto.operation_data * Proto.operation_receipt -> bool Lwt.t
 end
 
 (** Registers a mempool plug-in for a specific protocol (according to its [Proto.hash]). *)

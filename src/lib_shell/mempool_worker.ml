@@ -538,7 +538,11 @@ module Make
                  | `Permanent -> Refused errors
                  | `Temporary -> Branch_delayed errors)
           | Ok (validation_state, receipt) ->
-              match Mempool_filters.post_filter state.filter_config (op.protocol_data, receipt) with
+              Mempool_filters.post_filter
+                state.filter_config
+                ~validation_state_before:state.validation_state
+                ~validation_state_after:validation_state
+                (op.protocol_data, receipt) >>= function
               | false -> Lwt.return (None, Refused_by_post_filter)
               | true -> Lwt.return (Some validation_state, Applied receipt)
 
