@@ -57,6 +57,10 @@ let config_encoding : config Data_encoding.t =
        (dft "minimal_fees_per_byte" Tez.encoding Tez.zero)
        (dft "allow_script_failure" bool true))
 
+let pp_config ppf config =
+  let obj = Data_encoding.Json.construct config_encoding config in
+  Data_encoding.Json.pp ppf obj
+
 let default_config =
   { minimal_fees = Tez.zero ;
     minimal_fees_per_gas_unit = Tez.zero ;
