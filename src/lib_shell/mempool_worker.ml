@@ -31,6 +31,7 @@ type limits = {
 module type T = sig
 
   module Proto: Registered_protocol.T
+  module Mempool_filters: Mempool_filters.T with module Proto = Proto
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
   module Worker : Worker.T
@@ -48,12 +49,18 @@ module type T = sig
     | Branch_delayed of error list
     | Branch_refused of error list
     | Refused of error list
+    | Refused_by_pre_filter
+    | Refused_by_post_filter
     | Duplicate
     | Not_in_branch
   val result_encoding : result Data_encoding.t
 
   (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Mempool_helpers.chain -> t tzresult Lwt.t
+  val create :
+    limits ->
+    Mempool_helpers.chain ->
+    Mempool_filters.config ->
+    t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** parse a new operation and add it to the mempool context *)
@@ -63,6 +70,9 @@ module type T = sig
   val validate : t -> operation -> result tzresult Lwt.t
 
   val chain : t -> Mempool_helpers.chain
+
+  val update_filter_config : t -> Mempool_filters.config -> unit
+  val filter_config : t -> Mempool_filters.config
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 
@@ -76,11 +86,17 @@ module type STATIC = sig
   val max_size_parsed_cache: int
 end
 
-module Make(Static: STATIC)(Proto: Registered_protocol.T)
-  : T with module Proto = Proto
+module Make
+    (Static : STATIC)
+    (Proto : Registered_protocol.T)
+    (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Mempool_filters = Mempool_filters
 = struct
 
   module Proto = Proto
+  module Mempool_filters = Mempool_filters
 
   (* used for rpc *)
   module Proto_services = Block_services.Make(Proto)(Proto)
@@ -96,6 +112,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     | Branch_delayed of error list
     | Branch_refused of error list
     | Refused of error list
+    | Refused_by_pre_filter
+    | Refused_by_post_filter
     | Duplicate
     | Not_in_branch
 
@@ -123,11 +141,21 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
           (function Refused error -> Some error | _ -> None)
           (fun error -> Refused error) ;
         case (Tag 4)
+          ~title:"Refused by prefilter"
+          unit
+          (function Refused_by_pre_filter -> Some () | _ -> None)
+          (fun () -> Refused_by_pre_filter) ;
+        case (Tag 5)
+          ~title:"Refused by postfilter"
+          unit
+          (function Refused_by_post_filter -> Some () | _ -> None)
+          (fun () -> Refused_by_post_filter) ;
+        case (Tag 6)
           ~title:"Duplicate"
           empty
           (function Duplicate -> Some () | _ -> None)
           (fun () -> Duplicate) ;
-        case (Tag 5)
+        case (Tag 7)
           ~title:"Not_in_branch"
           empty
           (function Not_in_branch -> Some () | _ -> None)
@@ -139,6 +167,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     | Branch_delayed _ -> Format.pp_print_string ppf "branch delayed"
     | Branch_refused _ -> Format.pp_print_string ppf "branch refused"
     | Refused _ -> Format.pp_print_string ppf "refused"
+    | Refused_by_pre_filter -> Format.pp_print_string ppf "refused by pre-filter"
+    | Refused_by_post_filter -> Format.pp_print_string ppf "refused by post-filter"
     | Duplicate -> Format.pp_print_string ppf "duplicate"
     | Not_in_branch -> Format.pp_print_string ppf "not in branch"
 
@@ -192,11 +222,13 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
   module Event = struct
     type t =
       | Request of (Request.view * Worker_types.request_status * error list option)
+      | Filter_config_update of Mempool_filters.config
       | Debug of string
 
     let level req =
       match req with
       | Debug _ -> Logging.Debug
+      | Filter_config_update _ -> Logging.Info
       | Request _ -> Logging.Info
 
     let encoding =
@@ -208,13 +240,18 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
             (function Debug msg -> Some msg | _ -> None)
             (fun msg -> Debug msg) ;
           case (Tag 1)
+            ~title:"Filter config update"
+            (obj1 (req "config" Mempool_filters.config_encoding))
+            (function Filter_config_update config -> Some config | _ -> None)
+            (fun config -> Filter_config_update config) ;
+          case (Tag 2)
             ~title:"Request"
             (obj2
                (req "request" Request.encoding)
                (req "status" Worker_types.request_status_encoding))
             (function Request (req, t, None) -> Some (req, t) | _ -> None)
             (fun (req, t) -> Request (req, t, None)) ;
-          case (Tag 2)
+          case (Tag 3)
             ~title:"Failed request"
             (obj3
                (req "error" RPC_error.encoding)
@@ -225,6 +262,9 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
     let pp ppf = function
       | Debug msg -> Format.fprintf ppf "%s" msg
+      | Filter_config_update config ->
+          Format.fprintf ppf "Updated filter configuration: %a"
+            Mempool_filters.pp_config config
       | Request (view, { pushed ; treated ; completed }, None)  ->
           Format.fprintf ppf
             "@[<v 0>%a@,Pushed: %a, Treated: %a, Completed: %a@]"
@@ -354,6 +394,14 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
                    (proto_op,err)
                    acc.Proto_services.Mempool.refused
              }
+           | Refused_by_pre_filter | Refused_by_post_filter -> {
+               acc with
+               Proto_services.Mempool.refused =
+                 Operation_hash.Map.add
+                   hash
+                   (proto_op,[])
+                   acc.Proto_services.Mempool.refused
+             }
            | _ -> acc
         ) t empty
 
@@ -367,6 +415,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       limits : limits ;
       chain : Mempool_helpers.chain ;
       validation_state : Proto.validation_state ;
+      filter_config : Mempool_filters.config ;
     }
 
     (* internal worker state *)
@@ -376,6 +425,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
         mutable validation_state : Proto.validation_state ;
 
         cache : ValidatedCache.t ;
+
+        mutable filter_config : Mempool_filters.config ;
 
         (* live blocks and operations, initialized at worker launch *)
         live_blocks : Block_hash.Set.t ;
@@ -387,19 +438,25 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
           Proto.operation_data
         ) Lwt_watcher.input;
 
-        parameters : parameters ;
+        chain : Mempool_helpers.chain ;
       }
 
-    type view = { cache : ValidatedCache.t }
+    type view = {
+      cache : ValidatedCache.t ;
+      filter_config : Mempool_filters.config ;
+    }
 
-    let view (state : state) _ : view = { cache = state.cache }
+    let view (state : state) _ : view =
+      { cache = state.cache ; filter_config = state.filter_config }
 
     let encoding =
       let open Data_encoding in
       conv
-        (fun { cache } -> cache)
-        (fun cache -> { cache })
-        ValidatedCache.encoding
+        (fun { cache ; filter_config } -> (cache, filter_config))
+        (fun (cache, filter_config) -> { cache ; filter_config })
+        (obj2
+           (req "cache" ValidatedCache.encoding)
+           (req "filter_config" Mempool_filters.config_encoding))
 
     let pp ppf { cache } =
       ValidatedCache.pp
@@ -469,16 +526,22 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     else if not (Block_hash.Set.mem op.raw.Operation.shell.branch state.live_blocks) then
       Lwt.return (None,Not_in_branch)
     else
-      Proto.apply_operation state.validation_state
-        { shell = op.raw.shell ; protocol_data = op.protocol_data } >|= function
-      | Ok (validation_state, receipt) ->
-          (Some validation_state, Applied receipt)
-      | Error errors ->
-          (None,
-           match classify_errors errors with
-           | `Branch -> Branch_refused errors
-           | `Permanent -> Refused errors
-           | `Temporary -> Branch_delayed errors)
+      match Mempool_filters.pre_filter state.filter_config op.protocol_data with
+      | false -> Lwt.return (None, Refused_by_pre_filter)
+      | true ->
+          Proto.apply_operation state.validation_state
+            { shell = op.raw.shell ; protocol_data = op.protocol_data } >>= function
+          | Error errors ->
+              Lwt.return
+                (None,
+                 match classify_errors errors with
+                 | `Branch -> Branch_refused errors
+                 | `Permanent -> Refused errors
+                 | `Temporary -> Branch_delayed errors)
+          | Ok (validation_state, receipt) ->
+              match Mempool_filters.post_filter state.filter_config (op.protocol_data, receipt) with
+              | false -> Lwt.return (None, Refused_by_post_filter)
+              | true -> Lwt.return (Some validation_state, Applied receipt)
 
   (*** end prevalidation ***)
 
@@ -534,8 +597,8 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
     match request with
     | Request.Validate parsed_op -> on_validate w parsed_op >>= return
 
-  let on_launch (_ : t) (_ : Name.t) ( { chain ; validation_state } as parameters ) =
-    Chain.data chain.state >>= fun {
+  let on_launch (_ : t) (_ : Name.t) (parameters : Types.parameters) =
+    Chain.data parameters.chain.state >>= fun {
       current_mempool = _mempool ;
       live_blocks ; live_operations } ->
     (* remove all operations that are already included *)
@@ -543,20 +606,20 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
         ParsedCache.rem parsed_cache hash
       ) live_operations;
     return {
-      validation_state ;
+      validation_state = parameters.validation_state ;
       cache = ValidatedCache.create () ;
+      filter_config = parameters.filter_config ;
       live_blocks ;
       live_operations ;
-      operation_stream = Lwt_watcher.create_input ();
-      parameters
+      operation_stream = Lwt_watcher.create_input () ;
+      chain = parameters.chain ;
     }
 
   let on_close w =
     let state = Worker.state w in
     Lwt_watcher.shutdown_input state.operation_stream;
     ValidatedCache.iter (fun hash _ ->
-        Distributed_db.Operation.clear_or_cancel
-          state.parameters.chain.db hash)
+        Distributed_db.Operation.clear_or_cancel state.chain.db hash)
       state.cache ;
     ValidatedCache.clear state.cache;
     Lwt.return_unit
@@ -571,7 +634,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   let table = Worker.create_table Queue
 
-  let create limits (chain: Mempool_helpers.chain)  =
+  let create limits (chain: Mempool_helpers.chain) filter_config  =
     let module Handlers = struct
       type self = t
       let on_launch = on_launch
@@ -588,13 +651,21 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
       table
       limits.worker_limits
       chain.Mempool_helpers.id
-      { limits ; chain ; validation_state }
+      { limits ; chain ; validation_state ; filter_config }
       (module Handlers)
 
   (* Exporting functions *)
 
   let validate t parsed_op =
     Worker.push_request_and_wait t (Request.Validate parsed_op)
+
+  let update_filter_config t filter_config =
+    let state = Worker.state t in
+    state.filter_config <- filter_config
+
+  let filter_config t =
+    let state = Worker.state t in
+    state.filter_config
 
   (* atomic parse + memoization *)
   let parse raw_op =
@@ -608,7 +679,7 @@ module Make(Static: STATIC)(Proto: Registered_protocol.T)
 
   let chain t =
     let state = Worker.state t in
-    state.parameters.chain
+    state.chain
 
   let fitness t =
     let state = Worker.state t in
