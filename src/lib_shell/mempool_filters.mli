@@ -24,7 +24,7 @@
 (*****************************************************************************)
 
 (** Type of a protocol-specific mempool filter plug-in. *)
-module type FILTER = sig
+module type T = sig
 
   (** Type of protocol-specific mempool configuration, as specifiable
       in the node's configuration file, and updatable via RPCs. *)
@@ -32,6 +32,8 @@ module type FILTER = sig
 
   (** Formatting of {!config} for the configuration file and RPCs. *)
   val config_encoding : config Data_encoding.t
+
+  val pp_config : Format.formatter -> config -> unit
 
   (** Default configuration value, used when none is specified. *)
   val default_config : config
@@ -47,7 +49,7 @@ module type FILTER = sig
 end
 
 (** Registers a mempool plug-in for a specific protocol (according to its [Proto.hash]). *)
-val register : (module FILTER) -> unit
+val register : (module T) -> unit
 
 (** Looks for a mempool plug-in for a specific protocol. *)
-val find : Protocol_hash.t -> (module FILTER) option
+val find : Protocol_hash.t -> (module T) option
