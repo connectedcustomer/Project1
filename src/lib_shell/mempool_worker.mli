@@ -30,6 +30,7 @@ type limits = {
 module type T = sig
 
   module Proto: Registered_protocol.T
+  module Mempool_filters: Mempool_filters.T with module Proto = Proto
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
   module Worker : Worker.T
@@ -47,12 +48,18 @@ module type T = sig
     | Branch_delayed of error list
     | Branch_refused of error list
     | Refused of error list
+    | Refused_by_pre_filter
+    | Refused_by_post_filter
     | Duplicate
     | Not_in_branch
   val result_encoding : result Data_encoding.t
 
   (** Creates/tear-down a new mempool validator context. *)
-  val create : limits -> Mempool_helpers.chain -> t tzresult Lwt.t
+  val create :
+    limits ->
+    Mempool_helpers.chain ->
+    Mempool_filters.config ->
+    t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** parse a new operation *)
@@ -62,6 +69,9 @@ module type T = sig
   val validate : t -> operation -> result tzresult Lwt.t
 
   val chain : t -> Mempool_helpers.chain
+
+  val update_filter_config : t -> Mempool_filters.config -> unit
+  val filter_config : t -> Mempool_filters.config
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 
@@ -75,4 +85,10 @@ module type STATIC = sig
   val max_size_parsed_cache: int
 end
 
-module Make (Static : STATIC) (Proto : Registered_protocol.T) : T with module Proto = Proto
+module Make
+    (Static : STATIC)
+    (Proto : Registered_protocol.T)
+    (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Mempool_filters = Mempool_filters

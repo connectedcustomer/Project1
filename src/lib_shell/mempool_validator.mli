@@ -46,7 +46,7 @@ type recycling
 (** Creates/tear-down a new prevalidator context. *)
 val create:
   limits ->
-  (module Registered_protocol.T) ->
+  (module Mempool_filters.T) ->
   Distributed_db.chain_db ->
   t tzresult Lwt.t
 
