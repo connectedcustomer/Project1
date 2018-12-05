@@ -30,6 +30,8 @@ type limits = {
 
 module type T = sig
 
+  module Proto : Registered_protocol.T
+
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
@@ -37,8 +39,8 @@ module type T = sig
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal queue for later advertisement *)
-  val applied : t -> Operation_hash.t -> unit Lwt.t
-  val branch_delayed : t -> Operation_hash.t -> unit Lwt.t
+  val applied : t -> Operation_hash.t -> Proto.operation -> unit Lwt.t
+  val branch_delayed : t -> Operation_hash.t -> Proto.operation -> unit Lwt.t
 
   (** advertise the queued operations and clear the queue *)
   val advertise : t -> unit Lwt.t
@@ -48,4 +50,4 @@ module type T = sig
 
 end
 
-module M : T
+module Make (Proto : Registered_protocol.T) : T with module Proto = Proto

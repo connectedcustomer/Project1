@@ -94,7 +94,7 @@ module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
     (Mempool_filters: Mempool_filters.T with module Proto = Proto)
-    (Mempool_advertiser : Mempool_advertiser.T)
+    (Mempool_advertiser : Mempool_advertiser.T with module Proto = Proto)
   : T
     with module Proto = Proto
      and module Mempool_filters = Mempool_filters
