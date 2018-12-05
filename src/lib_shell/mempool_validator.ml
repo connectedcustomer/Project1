@@ -35,8 +35,11 @@ type limits = {
 }
 
 (* This is equivalent to `Mempool_peer_worker.input P2p_peer.Id.Map.t` but
-   independent of any instantiation of `Mempool_peer_worker`. *)
-type recycling = Operation_hash.t list P2p_peer.Id.Map.t
+ * independent of any instantiation of `Mempool_peer_worker`. *)
+type recycling = {
+  operations: Operation_hash.t list P2p_peer.Id.Map.t ;
+  filter_config: Data_encoding.json ;
+}
 
 
 (** Types for the mempool_validator instantiated values: first-class module that
@@ -68,6 +71,8 @@ module type T = sig
   val limits: limits
   val chain: Mempool_helpers.chain
 
+  val rpc_directory: unit RPC_directory.t
+
 end
 
 type t = (module T)
@@ -95,8 +100,11 @@ type t = (module T)
 *)
 module type PRE = sig
   module Proto: Registered_protocol.T
+  module Mempool_filters: Mempool_filters.T
+    with module Proto = Proto
   module Mempool_worker: Mempool_worker.T
     with module Proto = Proto
+     and module Mempool_filters = Mempool_filters
   val mempool_worker: Mempool_worker.t
   val limits: limits
   val chain: Mempool_helpers.chain
@@ -114,6 +122,8 @@ module Create (Pre : PRE) : T = struct
 
   let mempool_worker_ref = ref mempool_worker
   let get_mempool_worker () = !mempool_worker_ref
+
+  let filter_config = ref Mempool_filters.default_config
 
   (* Typical number of connected peers: 10-100 *)
   let mempool_peer_workers = P2p_peer.Id.Table.create 64
@@ -155,12 +165,24 @@ module Create (Pre : PRE) : T = struct
            assert (not (P2p_peer.Id.Map.mem peer_id acc)) ;
            Lwt.return (P2p_peer.Id.Map.add peer_id r acc))
         P2p_peer.Id.Map.empty
-    end >>= fun recycling ->
+    end >>= fun operations ->
     clear_mempool_peer_workers ();
+    let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
+    let filter_config =
+      Data_encoding.Json.construct
+        Mempool_filters.config_encoding filter_config in
     Mempool_worker.shutdown !mempool_worker_ref >>= fun () ->
-    Lwt.return recycling
+    Lwt.return { operations ; filter_config }
 
-  let recycle recycling =
+  let recycle { operations ; filter_config } =
+    begin
+      try
+        let filter_config =
+          Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
+        Mempool_worker.update_filter_config !mempool_worker_ref filter_config
+      with
+      | _ -> () (* TODO: only catch JSON decoding errors *)
+    end ;
     Lwt.join begin
       P2p_peer.Id.Map.fold
         (fun peer_id input acc ->
@@ -168,16 +190,37 @@ module Create (Pre : PRE) : T = struct
              get_mempool_peer_worker peer_id >>=? fun mpw ->
              Mempool_peer_worker.validate mpw input
            end >>= fun _ -> Lwt.return_unit) :: acc)
-        recycling
+        operations
         []
     end
 
   let new_head _head =
+    let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
     shutdown () >>= fun recycling ->
-    Mempool_worker.create limits.worker_limits chain >>=? fun mw ->
+    Mempool_worker.create limits.worker_limits chain filter_config >>=? fun mw ->
     mempool_worker_ref := mw;
     recycle recycling >>= fun () ->
     return_unit
+
+  module Proto_services = Block_services.Make(Proto)(Proto)
+
+  let rpc_directory =
+    RPC_directory.empty |> fun dir ->
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.get_filter RPC_path.open_root)
+      (fun () () () ->
+         let obj =
+           Data_encoding.Json.construct
+             Mempool_filters.config_encoding !filter_config in
+         return obj) |> fun dir ->
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.set_filter RPC_path.open_root)
+      (fun () () obj ->
+         let config = Data_encoding.Json.destruct Mempool_filters.config_encoding obj in
+         filter_config := config ;
+         return_unit)
 
 end
 
@@ -185,19 +228,29 @@ end
    the `Create` functor. As part of the process, it instantiates a
    `mempool_worker`. This instantiation (1) can fail and (2) is within Lwt. For
    these reasons, a function (rather than a functor) is necessary. *)
-let create limits (module Proto: Registered_protocol.T) chain_db =
+let create
+    limits
+    (module Mempool_filters: Mempool_filters.T)
+    chain_db =
+
+  let module Proto = Mempool_filters.Proto in
 
   let chain = Mempool_helpers.chain chain_db in
 
   let module Mempool_worker =
     Mempool_worker.Make
       (struct let max_size_parsed_cache = limits.worker_max_size_parsed_cache end)
-      (Proto) in
-  Mempool_worker.create limits.worker_limits chain >>=? fun mempool_worker ->
+      (Proto)
+      (Mempool_filters) in
+  let filter_config =
+    (* NOTE: recycling overrules this, but we should still load a custom default *)
+    Mempool_filters.default_config in
+  Mempool_worker.create limits.worker_limits chain filter_config >>=? fun mempool_worker ->
 
   let module Pre : PRE = struct
     module Proto = Proto
     module Mempool_worker = Mempool_worker
+    module Mempool_filters = Mempool_filters
     let mempool_worker = mempool_worker
     let limits = limits
     let chain = chain
@@ -287,6 +340,8 @@ let rpc_directory : t option RPC_directory.t =
           Lwt.return (RPC_directory.map (fun _ -> Lwt.return_unit) empty_rpc_directory)
       | Some (module M : T) ->
           Lwt.return
-            (RPC_directory.map
-               (fun _ -> Lwt.return (M.get_mempool_worker ()))
-               M.Mempool_worker.rpc_directory))
+            (RPC_directory.merge
+               (RPC_directory.map (fun _ -> Lwt.return_unit) M.rpc_directory)
+               (RPC_directory.map
+                  (fun _ -> Lwt.return (M.get_mempool_worker ()))
+                  M.Mempool_worker.rpc_directory)))
