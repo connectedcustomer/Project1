@@ -30,6 +30,8 @@ type limits = {
 
 module type T = sig
 
+  module Proto : Registered_protocol.T
+
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
@@ -37,8 +39,8 @@ module type T = sig
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal state for later advertisement *)
-  val applied : t -> Operation_hash.t -> unit Lwt.t
-  val branch_delayed : t -> Operation_hash.t -> unit Lwt.t
+  val applied : t -> Operation_hash.t -> Proto.operation -> unit Lwt.t
+  val branch_delayed : t -> Operation_hash.t -> Proto.operation -> unit Lwt.t
 
   (** advertised the operations in the internal state and clear it *)
   val advertise : t -> unit Lwt.t
@@ -48,7 +50,9 @@ module type T = sig
 
 end
 
-module M : T = struct
+module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = struct
+
+  module Proto = Proto
 
   module Log = Tezos_stdlib.Logging.Make(struct
       let name = "node.mempool_advertiser"
@@ -64,8 +68,8 @@ module M : T = struct
   module Request = struct
 
     type 'a t =
-      | Include_applied : Operation_hash.t -> unit t
-      | Include_branch_delayed : Operation_hash.t -> unit t
+      | Include_applied : (Operation_hash.t * Proto.operation) -> unit t
+      | Include_branch_delayed : (Operation_hash.t * Proto.operation) -> unit t
       | Advertise : unit t
 
     type view =
@@ -76,8 +80,8 @@ module M : T = struct
     let view
       : type a. a t -> view
       = function
-        | Include_applied op_hash -> View_include_applied op_hash
-        | Include_branch_delayed op_hash -> View_include_branch_delayed op_hash
+        | Include_applied (op_hash, _) -> View_include_applied op_hash
+        | Include_branch_delayed (op_hash, _) -> View_include_branch_delayed op_hash
         | Advertise -> View_advertise
 
     let encoding =
@@ -205,6 +209,9 @@ module M : T = struct
   let table = Worker.create_table Queue
   type t = Worker.infinite Worker.queue Worker.t
 
+  let is_endorsement (op : Proto.operation) =
+    Proto.acceptable_passes op = [0]
+
   let send_advertisement (state : Types.state) =
     let mempool =
       { state.rev_mempool with
@@ -220,15 +227,17 @@ module M : T = struct
     = fun w req ->
       let state = Worker.state w in
       match req with
-      | Request.Include_applied op_hash ->
+      | Request.Include_applied (op_hash, _op) ->
           state.rev_mempool <-
             { state.rev_mempool with
               known_valid = op_hash :: state.rev_mempool.known_valid } ;
           Ok ()
-      | Request.Include_branch_delayed op_hash ->
-          state.rev_mempool <-
-            { state.rev_mempool with
-              pending = Operation_hash.Set.add op_hash state.rev_mempool.pending } ;
+      | Request.Include_branch_delayed (op_hash, op) ->
+          begin if is_endorsement op then
+              state.rev_mempool <-
+                { state.rev_mempool with
+                  pending = Operation_hash.Set.add op_hash state.rev_mempool.pending }
+          end ;
           Ok ()
       | Request.Advertise ->
           match Lwt.state state.throttle with
@@ -288,11 +297,10 @@ module M : T = struct
   let shutdown w =
     Worker.shutdown w
 
-
-  let applied t op_hash =
-    Worker.push_request t (Include_applied op_hash)
-  let branch_delayed t op_hash =
-    Worker.push_request t (Include_branch_delayed op_hash)
+  let applied t op_hash op =
+    Worker.push_request t (Include_applied (op_hash, op))
+  let branch_delayed t op_hash op =
+    Worker.push_request t (Include_branch_delayed (op_hash, op))
   let advertise t =
     Worker.push_request t Advertise
 

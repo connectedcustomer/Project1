@@ -273,7 +273,7 @@ let create
   let chain = Mempool_helpers.chain chain_db in
   Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
 
-  let module Mempool_advertiser = Mempool_advertiser.M in
+  let module Mempool_advertiser = Mempool_advertiser.Make(Proto) in
   Mempool_advertiser.create
     limits.advertiser_limits chain head_info >>=? fun mempool_advertiser ->
 

@@ -95,7 +95,7 @@ module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
     (Mempool_filters: Mempool_filters.T with module Proto = Proto)
-    (Mempool_advertiser : Mempool_advertiser.T)
+    (Mempool_advertiser : Mempool_advertiser.T with module Proto = Proto)
   : T
     with module Proto = Proto
      and module Mempool_filters = Mempool_filters
@@ -655,9 +655,15 @@ module Make
       | Request.Validate op -> (* for typing the res *)
           match res with
           | Applied _ ->
-              Mempool_advertiser.applied state.mempool_advertiser op.hash
+              Mempool_advertiser.applied
+                state.mempool_advertiser
+                op.hash
+                { shell = op.raw.shell ; protocol_data = op.protocol_data }
           | Branch_delayed _ ->
-              Mempool_advertiser.branch_delayed state.mempool_advertiser op.hash
+              Mempool_advertiser.branch_delayed
+                state.mempool_advertiser
+                op.hash
+                { shell = op.raw.shell ; protocol_data = op.protocol_data }
           | Branch_refused _
           | Refused _
           | Refused_by_pre_filter | Refused_by_post_filter
