@@ -64,7 +64,7 @@ module type T = sig
     Mempool_filters.config ->
     Mempool_advertiser.t ->
     t tzresult Lwt.t
-  val shutdown : t -> unit Lwt.t
+  val shutdown : t -> Operation_hash.t list Lwt.t
 
   (** parse a new operation *)
   val parse : Operation.t -> operation tzresult

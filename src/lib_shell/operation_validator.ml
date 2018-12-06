@@ -64,7 +64,7 @@ module type T = sig
     Mempool_filters.config ->
     Mempool_advertiser.t ->
     t tzresult Lwt.t
-  val shutdown : t -> unit Lwt.t
+  val shutdown : t -> Operation_hash.t list Lwt.t
 
   (** parse a new operation and add it to the mempool context *)
   val parse : Operation.t -> operation tzresult
@@ -435,6 +435,8 @@ module Make
 
         mutable filter_config : Mempool_filters.config ;
 
+        mutable applied_operation_hashes : Operation_hash.t list ;
+
         (* live blocks and operations, initialized at worker launch *)
         live_blocks : Block_hash.Set.t ;
         live_operations : Operation_hash.Set.t ;
@@ -491,7 +493,11 @@ module Make
     Format.kasprintf (fun msg -> Worker.record_event w (Debug msg))
 
   let shutdown w =
-    Worker.shutdown w
+    let state = Worker.state w in
+    let recycling = List.rev state.applied_operation_hashes in
+    Worker.shutdown w >>= fun () ->
+    Lwt.return recycling
+
 
   (*** prevalidation ****)
   open Validation_errors
@@ -581,7 +587,9 @@ module Make
     apply_operation state parsed_op >>= fun (validation_state, result) ->
     begin
       match validation_state with
-      | Some validation_state -> state.validation_state <- validation_state
+      | Some validation_state ->
+          state.validation_state <- validation_state ;
+          state.applied_operation_hashes <- parsed_op.hash :: state.applied_operation_hashes
       | None -> ()
     end ;
     Lwt.return result
@@ -623,6 +631,7 @@ module Make
       validation_state = parameters.validation_state ;
       cache = ValidatedCache.create () ;
       filter_config = parameters.filter_config ;
+      applied_operation_hashes = [] ;
       live_blocks = parameters.head_info.live_blocks ;
       live_operations = parameters.head_info.live_operations ;
       current_head = parameters.head_info.current_head ;

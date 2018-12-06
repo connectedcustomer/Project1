@@ -35,10 +35,12 @@ type limits = {
   advertiser_limits: Mempool_advertiser.limits ;
 }
 
-(* This is equivalent to `Mempool_peer_worker.input P2p_peer.Id.Map.t` but
- * independent of any instantiation of `Mempool_peer_worker`. *)
+(* We keep list of list of ops to be retried. The first list preserve order of
+   operation as they need to be processed, the second avoids having to perform
+   multiple concatenations. *)
 type recycling = {
-  operations: Operation_hash.t list P2p_peer.Id.Map.t ;
+  from_operation_validator : Operation_hash.t list ;
+  from_peer_workers : Operation_hash.t list list ;
   filter_config: Data_encoding.json ;
 }
 
@@ -54,15 +56,19 @@ module type T = sig
   module Mempool_advertiser: Mempool_advertiser.T
   module Operation_validator: Operation_validator.T
     with module Proto = Proto
+  module Mempool_batch_processor: Mempool_batch_processor.T
+    with module Proto = Proto
+     and module Operation_validator = Operation_validator
   module Mempool_peer_worker: Mempool_peer_worker.T
     with module Proto = Proto
      and module Operation_validator = Operation_validator
+     and module Mempool_batch_processor = Mempool_batch_processor
 
   (* worker values and registries *)
   val map_mempool_advertiser: (Mempool_advertiser.t -> 'a) -> 'a
 
-  val get_mempool_worker: unit -> Operation_validator.t
-  val map_mempool_worker: (Operation_validator.t -> 'a) -> 'a
+  val get_operation_validator: unit -> Operation_validator.t
+  val map_operation_validator: (Operation_validator.t -> 'a) -> 'a
 
   val get_mempool_peer_worker: P2p_peer.Id.t -> Mempool_peer_worker.t tzresult Lwt.t
   val clear_mempool_peer_workers: unit -> unit
@@ -106,7 +112,7 @@ let () =
 
     1. `create`
     1.1. instantiates the `Operation_validator` module
-    1.2. initializes a `mempool_worker`
+    1.2. initializes a `operation_validator`
     1.3. puts it all in a PRE module
     1.4. calls the `Create` functor
     2. `Create`
@@ -129,7 +135,7 @@ module type PRE = sig
      and module Mempool_filters = Mempool_filters
      and module Mempool_advertiser = Mempool_advertiser
   val mempool_advertiser: Mempool_advertiser.t
-  val mempool_worker: Operation_validator.t
+  val operation_validator: Operation_validator.t
   val limits: limits
   val chain: Mempool_helpers.chain
 end
@@ -138,18 +144,24 @@ module Create (Pre : PRE) : T = struct
 
   include Pre
 
+  module Mempool_batch_processor =
+    Mempool_batch_processor.Make
+      (Proto)
+      (Operation_validator)
+
   module Mempool_peer_worker =
     Mempool_peer_worker.Make
       (struct let max_pending_requests = limits.peer_worker_max_pending_requests end)
       (Proto)
       (Operation_validator)
+      (Mempool_batch_processor)
 
   let mempool_advertiser_ref = ref mempool_advertiser
   let map_mempool_advertiser f = f !mempool_advertiser_ref
 
-  let mempool_worker_ref = ref mempool_worker
-  let get_mempool_worker () = !mempool_worker_ref
-  let map_mempool_worker f = f !mempool_worker_ref
+  let operation_validator_ref = ref operation_validator
+  let get_operation_validator () = !operation_validator_ref
+  let map_operation_validator f = f !operation_validator_ref
 
   let filter_config = ref Mempool_filters.default_config
 
@@ -164,7 +176,7 @@ module Create (Pre : PRE) : T = struct
         Mempool_peer_worker.create
           limits.peer_worker_limits
           peer_id
-          !mempool_worker_ref >>=? fun mpw ->
+          !operation_validator_ref >>=? fun mpw ->
         P2p_peer.Id.Table.add mempool_peer_workers peer_id mpw ;
         return mpw
   let clear_mempool_peer_workers () =
@@ -181,50 +193,47 @@ module Create (Pre : PRE) : T = struct
     begin
       (* collect recycling, first as a list of promises, then as a promise of map *)
       P2p_peer.Id.Table.fold
-        (fun peer_id mpw acc ->
-           (Mempool_peer_worker.shutdown mpw >>= fun r ->
-            Lwt.return (peer_id, r))
-           :: acc)
+        (fun _peer_id mpw acc -> (Mempool_peer_worker.shutdown mpw) :: acc)
         mempool_peer_workers
         [] |>
       Lwt_list.fold_left_s
-        (fun acc p ->
-           p >>= fun (peer_id, r) ->
-           assert (not (P2p_peer.Id.Map.mem peer_id acc)) ;
-           Lwt.return (P2p_peer.Id.Map.add peer_id r acc))
-        P2p_peer.Id.Map.empty
-    end >>= fun operations ->
+        (fun acc p -> p >>= fun r -> Lwt.return (r :: acc))
+        []
+    end >>= fun from_peer_workers ->
     clear_mempool_peer_workers ();
-    let filter_config = Operation_validator.filter_config !mempool_worker_ref in
+    let filter_config = Operation_validator.filter_config !operation_validator_ref in
     let filter_config =
       Data_encoding.Json.construct
         Mempool_filters.config_encoding filter_config in
-    Operation_validator.shutdown !mempool_worker_ref >>= fun () ->
+    Operation_validator.shutdown !operation_validator_ref >>= fun from_operation_validator ->
     Mempool_advertiser.shutdown !mempool_advertiser_ref >>= fun () ->
-    Lwt.return { operations ; filter_config }
+    Lwt.return { from_operation_validator ; from_peer_workers ; filter_config }
 
-  let recycle { operations ; filter_config } =
+  let recycle { from_operation_validator ; from_peer_workers ; filter_config } =
     begin
       try
         let filter_config =
           Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
-        Operation_validator.update_filter_config !mempool_worker_ref filter_config
+        Operation_validator.update_filter_config !operation_validator_ref filter_config
       with
       | _ -> () (* TODO: only catch JSON decoding errors *)
     end ;
-    Lwt.join begin
-      P2p_peer.Id.Map.fold
-        (fun peer_id input acc ->
-           (begin
-             get_mempool_peer_worker peer_id >>=? fun mpw ->
-             Mempool_peer_worker.validate mpw input
-           end >>= fun _ -> Lwt.return_unit) :: acc)
-        operations
-        []
-    end
+    Mempool_batch_processor.batch
+      !operation_validator_ref
+      16
+      from_operation_validator >>= fun (_ : Mempool_batch_processor.output) ->
+    (* TODO: remember peer associated to ops, use result to affect peer's score *)
+    Lwt_list.iter_p
+      (fun from_peer_worker ->
+         Mempool_batch_processor.batch
+           !operation_validator_ref
+           4
+           from_peer_worker >>= fun (_ : Mempool_batch_processor.output) ->
+         Lwt.return_unit)
+      from_peer_workers
 
   let new_head _head =
-    let filter_config = Operation_validator.filter_config !mempool_worker_ref in
+    let filter_config = Operation_validator.filter_config !operation_validator_ref in
     Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
     shutdown () >>= fun recycling ->
     Mempool_advertiser.create limits.advertiser_limits chain head_info >>=? fun ma ->
@@ -233,8 +242,8 @@ module Create (Pre : PRE) : T = struct
       limits.operation_validator_limits
       chain head_info
       filter_config
-      ma >>=? fun mw ->
-    mempool_worker_ref := mw;
+      ma >>=? fun ov ->
+    operation_validator_ref := ov;
     recycle recycling >>= fun () ->
     return_unit
 
@@ -264,8 +273,8 @@ module Create (Pre : PRE) : T = struct
 end
 
 (* The "first-class module to first-class module" `create` function wraps around
-   the `Create` functor. As part of the process, it instantiates a
-   `mempool_worker`. This instantiation (1) can fail and (2) is within Lwt. For
+   the `Create` functor. As part of the process, it instantiates an
+   `operation_validator`. This instantiation (1) can fail and (2) is within Lwt. For
    these reasons, a function (rather than a functor) is necessary. *)
 let create
     limits
@@ -298,7 +307,7 @@ let create
     chain
     head_info
     filter_config
-    mempool_advertiser >>=? fun mempool_worker ->
+    mempool_advertiser >>=? fun operation_validator ->
 
   let module Pre : PRE = struct
     module Proto = Proto
@@ -306,7 +315,7 @@ let create
     module Operation_validator = Operation_validator
     module Mempool_filters = Mempool_filters
     let mempool_advertiser = mempool_advertiser
-    let mempool_worker = mempool_worker
+    let operation_validator = operation_validator
     let limits = limits
     let chain = chain
   end in
@@ -350,8 +359,8 @@ let inject (module M : T) operation =
         Error_monad.pp_print_error errs >>= fun () ->
       Lwt.return (Error errs)
   | Ok op ->
-      M.map_mempool_worker (fun mempool_worker ->
-          M.Operation_validator.validate mempool_worker op >>= function
+      M.map_operation_validator (fun operation_validator ->
+          M.Operation_validator.validate operation_validator op >>= function
           | Error errs ->
               Log.lwt_log_notice "Error whilst validating injected operation: %a"
                 Error_monad.pp_print_error errs >>= fun () ->
@@ -374,7 +383,7 @@ let inject (module M : T) operation =
 let new_head (module M : T) head =
   M.new_head head
 
-let fitness (module M : T) = M.map_mempool_worker M.Operation_validator.fitness
+let fitness (module M : T) = M.map_operation_validator M.Operation_validator.fitness
 let protocol_hash (module M : T) = M.Proto.hash
 let limits (module M : T) = M.limits
 let chain (module M : T) = M.chain
@@ -388,7 +397,7 @@ type status = {
 
 let status (module M : T) = {
   advertiser = M.map_mempool_advertiser M.Mempool_advertiser.status ;
-  worker = M.map_mempool_worker M.Operation_validator.status ;
+  worker = M.map_operation_validator M.Operation_validator.status ;
   peer_workers = M.map_mempool_peer_workers M.Mempool_peer_worker.status ;
 }
 (* TODO: introspection RPC for status *)
@@ -418,5 +427,5 @@ let rpc_directory : t option RPC_directory.t =
             (RPC_directory.merge
                (RPC_directory.map (fun _ -> Lwt.return_unit) M.rpc_directory)
                (RPC_directory.map
-                  (fun _ -> Lwt.return (M.get_mempool_worker ()))
+                  (fun _ -> Lwt.return (M.get_operation_validator ()))
                   M.Operation_validator.rpc_directory)))

@@ -57,6 +57,9 @@ module type T = sig
   module Proto: Registered_protocol.T
   module Operation_validator: Operation_validator.T
     with module Proto = Proto
+  module Mempool_batch_processor: Mempool_batch_processor.T
+    with module Proto = Proto
+     and module Operation_validator = Operation_validator
 
   (** The type of a peer worker. Each peer worker should be used for treating
       all the operations from a given peer. *)
@@ -101,6 +104,10 @@ module Make
     (Static: STATIC)
     (Proto: Registered_protocol.T)
     (Operation_validator: Operation_validator.T with module Proto = Proto)
+    (Mempool_batch_processor: Mempool_batch_processor.T
+     with module Proto = Proto
+      and module Operation_validator = Operation_validator)
   : T
     with module Proto = Proto
      and module Operation_validator = Operation_validator
+     and module Mempool_batch_processor = Mempool_batch_processor
