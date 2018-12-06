@@ -207,9 +207,24 @@ module Create (Pre : PRE) : T = struct
         Mempool_filters.config_encoding filter_config in
     Operation_validator.shutdown !operation_validator_ref >>= fun from_operation_validator ->
     Mempool_advertiser.shutdown !mempool_advertiser_ref >>= fun () ->
-    Lwt.return { from_operation_validator ; from_peer_workers ; filter_config }
+    Lwt.return (from_operation_validator, from_peer_workers, filter_config)
 
-  let recycle { from_operation_validator ; from_peer_workers ; filter_config } =
+  let recycle_parsed max_concurrency batch =
+    Mempool_batch_processor.batch_parsed
+      !operation_validator_ref
+      max_concurrency
+      batch >>= fun (_ : Mempool_batch_processor.output) ->
+    Lwt.return_unit
+  let recycle_one max_concurrency batch =
+    Mempool_batch_processor.batch
+      !operation_validator_ref
+      max_concurrency
+      batch >>= fun (_ : Mempool_batch_processor.output) ->
+    Lwt.return_unit
+  let recycle_p max_concurrency batches =
+    Lwt_list.iter_p (recycle_one max_concurrency) batches
+
+  let recycle (from_operation_validator, from_peer_workers, filter_config) =
     begin
       try
         let filter_config =
@@ -218,19 +233,8 @@ module Create (Pre : PRE) : T = struct
       with
       | _ -> () (* TODO: only catch JSON decoding errors *)
     end ;
-    Mempool_batch_processor.batch
-      !operation_validator_ref
-      16
-      from_operation_validator >>= fun (_ : Mempool_batch_processor.output) ->
-    (* TODO: remember peer associated to ops, use result to affect peer's score *)
-    Lwt_list.iter_p
-      (fun from_peer_worker ->
-         Mempool_batch_processor.batch
-           !operation_validator_ref
-           4
-           from_peer_worker >>= fun (_ : Mempool_batch_processor.output) ->
-         Lwt.return_unit)
-      from_peer_workers
+    recycle_parsed 16 from_operation_validator >>= fun () ->
+    recycle_p 4 from_peer_workers
 
   let new_head _head =
     let filter_config = Operation_validator.filter_config !operation_validator_ref in
@@ -269,6 +273,26 @@ module Create (Pre : PRE) : T = struct
 
   let advertise () =
     Mempool_advertiser.advertise !mempool_advertiser_ref
+
+  (* Re-exporting some functions to provide proto-agnostic recycling *)
+
+  let shutdown () =
+    shutdown () >>= fun (from_operation_validator, from_peer_workers, filter_config) ->
+    let from_operation_validator =
+      List.map (fun mop -> mop.Operation_validator.hash) from_operation_validator in
+    Lwt.return { from_operation_validator ; from_peer_workers ; filter_config }
+
+  let recycle { from_operation_validator ; from_peer_workers ; filter_config } =
+    begin
+      try
+        let filter_config =
+          Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
+        Operation_validator.update_filter_config !operation_validator_ref filter_config
+      with
+      | _ -> () (* TODO: only catch JSON decoding errors *)
+    end ;
+    recycle_one 16 from_operation_validator >>= fun () ->
+    recycle_p 4 from_peer_workers
 
 end
 
