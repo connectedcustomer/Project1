@@ -32,10 +32,12 @@ type chain = {
 
 val chain : Distributed_db.chain_db -> chain
 
-type block = {
-  hash : Block_hash.t ;
-  state : State.Block.t ;
-  header : Block_header.t ;
+type head_info = {
+  current_head : State.Block.t ;
+  current_head_hash : Block_hash.t ;
+  current_head_header : Block_header.t ;
+  live_blocks: Block_hash.Set.t ;
+  live_operations: Operation_hash.Set.t ;
 }
 
-val head_of_chain : chain -> block Lwt.t
+val head_info_of_chain : chain -> head_info Lwt.t

@@ -33,7 +33,7 @@ module type T = sig
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
-  val create : limits -> Distributed_db.chain_db -> State.Block.t -> t tzresult Lwt.t
+  val create : limits -> Mempool_helpers.chain -> Mempool_helpers.head_info -> t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal queue for later advertisement *)
