@@ -32,6 +32,7 @@ type limits = {
   worker_max_size_parsed_cache: int ;
   peer_worker_limits: Mempool_peer_worker.limits ;
   peer_worker_max_pending_requests: int ;
+  advertiser_limits: Mempool_advertiser.limits ;
 }
 
 (* This is equivalent to `Mempool_peer_worker.input P2p_peer.Id.Map.t` but
@@ -50,6 +51,7 @@ module type T = sig
 
   (* instantiated worker management modules *)
   module Proto: Registered_protocol.T
+  module Mempool_advertiser: Mempool_advertiser.T
   module Mempool_worker: Mempool_worker.T
     with module Proto = Proto
   module Mempool_peer_worker: Mempool_peer_worker.T
@@ -57,15 +59,21 @@ module type T = sig
      and module Mempool_worker = Mempool_worker
 
   (* worker values and registries *)
+  val map_mempool_advertiser: (Mempool_advertiser.t -> 'a) -> 'a
+
   val get_mempool_worker: unit -> Mempool_worker.t
+  val map_mempool_worker: (Mempool_worker.t -> 'a) -> 'a
+
   val get_mempool_peer_worker: P2p_peer.Id.t -> Mempool_peer_worker.t tzresult Lwt.t
   val clear_mempool_peer_workers: unit -> unit
   val map_mempool_peer_workers:
     (Mempool_peer_worker.t -> 'a) -> 'a P2p_peer.Id.Map.t
 
+  (* Basic operations *)
   val recycle : recycling -> unit Lwt.t
   val shutdown : unit -> recycling Lwt.t
-  val new_head : 'a -> unit tzresult Lwt.t
+  val new_head : Block_hash.t -> unit tzresult Lwt.t
+  val advertise: unit -> unit Lwt.t
 
   (* boilerplate configuration variables *)
   val limits: limits
@@ -76,6 +84,19 @@ module type T = sig
 end
 
 type t = (module T)
+
+
+type Error_monad.error += Closed of unit
+let () =
+  register_error_kind `Permanent
+    ~id:("mempool_validator.closed")
+    ~title:("Mempool_validator closed")
+    ~description:
+      ("The mempool validator has been closed. Operations on it now cause errors.")
+    ~pp:(fun ppf () -> Format.fprintf ppf "Mempool_validator has been shutdown.")
+    Data_encoding.unit
+    (function Closed () -> Some () | _ -> None)
+    (fun () -> Closed ())
 
 
 
@@ -100,11 +121,14 @@ type t = (module T)
 *)
 module type PRE = sig
   module Proto: Registered_protocol.T
+  module Mempool_advertiser: Mempool_advertiser.T
   module Mempool_filters: Mempool_filters.T
     with module Proto = Proto
   module Mempool_worker: Mempool_worker.T
     with module Proto = Proto
      and module Mempool_filters = Mempool_filters
+     and module Mempool_advertiser = Mempool_advertiser
+  val mempool_advertiser: Mempool_advertiser.t
   val mempool_worker: Mempool_worker.t
   val limits: limits
   val chain: Mempool_helpers.chain
@@ -120,8 +144,12 @@ module Create (Pre : PRE) : T = struct
       (Proto)
       (Mempool_worker)
 
+  let mempool_advertiser_ref = ref mempool_advertiser
+  let map_mempool_advertiser f = f !mempool_advertiser_ref
+
   let mempool_worker_ref = ref mempool_worker
   let get_mempool_worker () = !mempool_worker_ref
+  let map_mempool_worker f = f !mempool_worker_ref
 
   let filter_config = ref Mempool_filters.default_config
 
@@ -172,6 +200,7 @@ module Create (Pre : PRE) : T = struct
       Data_encoding.Json.construct
         Mempool_filters.config_encoding filter_config in
     Mempool_worker.shutdown !mempool_worker_ref >>= fun () ->
+    Mempool_advertiser.shutdown !mempool_advertiser_ref >>= fun () ->
     Lwt.return { operations ; filter_config }
 
   let recycle { operations ; filter_config } =
@@ -196,8 +225,11 @@ module Create (Pre : PRE) : T = struct
 
   let new_head _head =
     let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
+    Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
     shutdown () >>= fun recycling ->
-    Mempool_worker.create limits.worker_limits chain filter_config >>=? fun mw ->
+    Mempool_advertiser.create limits.advertiser_limits chain head_info >>=? fun ma ->
+    mempool_advertiser_ref := ma ;
+    Mempool_worker.create limits.worker_limits chain head_info filter_config ma >>=? fun mw ->
     mempool_worker_ref := mw;
     recycle recycling >>= fun () ->
     return_unit
@@ -222,6 +254,9 @@ module Create (Pre : PRE) : T = struct
          filter_config := config ;
          return_unit)
 
+  let advertise () =
+    Mempool_advertiser.advertise !mempool_advertiser_ref
+
 end
 
 (* The "first-class module to first-class module" `create` function wraps around
@@ -236,21 +271,34 @@ let create
   let module Proto = Mempool_filters.Proto in
 
   let chain = Mempool_helpers.chain chain_db in
+  Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
+
+  let module Mempool_advertiser = Mempool_advertiser.M in
+  Mempool_advertiser.create
+    limits.advertiser_limits chain head_info >>=? fun mempool_advertiser ->
 
   let module Mempool_worker =
     Mempool_worker.Make
       (struct let max_size_parsed_cache = limits.worker_max_size_parsed_cache end)
       (Proto)
-      (Mempool_filters) in
+      (Mempool_filters)
+      (Mempool_advertiser) in
   let filter_config =
     (* NOTE: recycling overrules this, but we should still load a custom default *)
     Mempool_filters.default_config in
-  Mempool_worker.create limits.worker_limits chain filter_config >>=? fun mempool_worker ->
+  Mempool_worker.create
+    limits.worker_limits
+    chain
+    head_info
+    filter_config
+    mempool_advertiser >>=? fun mempool_worker ->
 
   let module Pre : PRE = struct
     module Proto = Proto
+    module Mempool_advertiser = Mempool_advertiser
     module Mempool_worker = Mempool_worker
     module Mempool_filters = Mempool_filters
+    let mempool_advertiser = mempool_advertiser
     let mempool_worker = mempool_worker
     let limits = limits
     let chain = chain
@@ -284,7 +332,8 @@ let validate (module M : T) peer_id mempool =
             "Error validating mempool from peer %a: %a"
             P2p_peer.Id.pp_short peer_id
             Error_monad.pp_print_error errs
-      | Ok () -> Lwt.return_unit
+      | Ok () ->
+          M.advertise ()
 
 
 let inject (module M : T) operation =
@@ -294,29 +343,48 @@ let inject (module M : T) operation =
         Error_monad.pp_print_error errs >>= fun () ->
       Lwt.return (Error errs)
   | Ok op ->
-      M.Mempool_worker.validate (M.get_mempool_worker ()) op >>= function
-      | Error errs ->
-          Log.lwt_log_notice "Error whilst validating injected operation: %a"
-            Error_monad.pp_print_error errs >>= fun () ->
-          Lwt.return (Error errs)
-      | Ok _ ->
-          return_unit
+      M.map_mempool_worker (fun mempool_worker ->
+          M.Mempool_worker.validate mempool_worker op >>= function
+          | Error errs ->
+              Log.lwt_log_notice "Error whilst validating injected operation: %a"
+                Error_monad.pp_print_error errs >>= fun () ->
+              Lwt.return (Error errs)
+          | Ok result ->
+              match result with
+              | Branch_delayed _
+              | Branch_refused _
+              | Refused _
+              | Refused_by_pre_filter
+              | Refused_by_post_filter
+              | Duplicate
+              | Not_in_branch ->
+                  return_unit
+              | Applied _ ->
+                  M.advertise () >>= fun () ->
+                  return_unit)
 
 
-let new_head (module M : T) _head =
-  M.new_head _head
+let new_head (module M : T) head =
+  M.new_head head
 
-let fitness (module M : T) = M.Mempool_worker.fitness (M.get_mempool_worker ())
+let fitness (module M : T) = M.map_mempool_worker M.Mempool_worker.fitness
 let protocol_hash (module M : T) = M.Proto.hash
 let limits (module M : T) = M.limits
 let chain (module M : T) = M.chain
 
 
-let status (module M : T) =
-  let mws = M.Mempool_worker.status (M.get_mempool_worker ())in
-  let mpwss = M.map_mempool_peer_workers M.Mempool_peer_worker.status in
-  (mws, mpwss)
+type status = {
+  advertiser : Worker_types.worker_status ;
+  worker : Worker_types.worker_status ;
+  peer_workers : Worker_types.worker_status P2p_peer.Id.Map.t ;
+}
 
+let status (module M : T) = {
+  advertiser = M.map_mempool_advertiser M.Mempool_advertiser.status ;
+  worker = M.map_mempool_worker M.Mempool_worker.status ;
+  peer_workers = M.map_mempool_peer_workers M.Mempool_peer_worker.status ;
+}
+(* TODO: introspection RPC for status *)
 
 let empty_rpc_directory : unit RPC_directory.t =
   RPC_directory.register
