@@ -27,6 +27,7 @@ module type T = sig
   module Proto : Registered_protocol.T
   module Operation_validator : Operation_validator.T with module Proto = Proto
   type input = Operation_hash.t list
+  type input_parsed = Operation_validator.operation list
   type result =
     | Cannot_download of error list
     | Cannot_parse of error list
@@ -34,6 +35,7 @@ module type T = sig
     | Mempool_result of Operation_validator.result
   type output = result Operation_hash.Map.t
   val batch: Operation_validator.t -> int -> input -> output Lwt.t
+  val batch_parsed: Operation_validator.t -> int -> input_parsed -> output Lwt.t
 end
 
 module Make
@@ -48,6 +50,7 @@ module Make
   module Operation_validator = Operation_validator
 
   type input = Operation_hash.t list
+  type input_parsed = Operation_validator.operation list
   type result =
     | Cannot_download of error list
     | Cannot_parse of error list
@@ -59,6 +62,7 @@ module Make
     pool: unit Lwt_pool.t;
     received: Operation_hash.t Queue.t;
     downloading: (Operation_hash.t * Operation.t tzresult Lwt.t) Queue.t;
+    parsing: (Operation_hash.t * Operation_validator.operation tzresult) Queue.t;
     applying: (Operation_validator.operation * Operation_validator.result tzresult Lwt.t) Queue.t;
     mutable results: result Operation_hash.Map.t
   }
@@ -68,6 +72,7 @@ module Make
   let is_empty t =
     Queue.is_empty t.received &&
     Queue.is_empty t.downloading &&
+    Queue.is_empty t.parsing &&
     Queue.is_empty t.applying
 
   let has_resolved t = match Lwt.state t with
@@ -106,6 +111,18 @@ module Make
       pool = Lwt_pool.create pool_size Lwt.return;
       received = q_of_list op_hashes;
       downloading = Queue.create ();
+      parsing = Queue.create ();
+      applying = Queue.create ();
+      results = Operation_hash.Map.empty;
+    }
+
+  let create_parsed pool_size ops =
+    let parsing = List.map (fun op -> (op.Operation_validator.hash, Ok op)) ops in
+    {
+      pool = Lwt_pool.create pool_size Lwt.return;
+      received = Queue.create () ;
+      downloading = Queue.create ();
+      parsing = q_of_list parsing ;
       applying = Queue.create ();
       results = Operation_hash.Map.empty;
     }
@@ -135,6 +152,20 @@ module Make
           Lwt.return_unit
     end
 
+    else if not (Queue.is_empty pipeline.parsing) then begin
+      let (op_hash, p) = Queue.pop pipeline.parsing in
+      match p with
+      | Error errs ->
+          record_result pipeline op_hash (Cannot_parse errs);
+          Lwt.return_unit
+      | Ok mop ->
+          let p =
+            Lwt_pool.use pipeline.pool (fun () ->
+                Operation_validator.validate operation_validator mop) in
+          Queue.push (mop, p) pipeline.applying;
+          Lwt.return_unit
+    end
+
     else if head_is_resolved pipeline.downloading then begin
       let (op_hash, p) = Queue.pop pipeline.downloading in
       p >>= function
@@ -142,16 +173,8 @@ module Make
           record_result pipeline op_hash (Cannot_download errs);
           Lwt.return_unit
       | Ok op ->
-          match Operation_validator.parse op with
-          | Error errs ->
-              record_result pipeline op_hash (Cannot_parse errs);
-              Lwt.return_unit
-          | Ok mop ->
-              let p =
-                Lwt_pool.use pipeline.pool (fun () ->
-                    Operation_validator.validate operation_validator mop) in
-              Queue.push (mop, p) pipeline.applying;
-              Lwt.return_unit
+          Queue.push (op_hash, Operation_validator.parse op) pipeline.parsing;
+          Lwt.return_unit
     end
 
     else if (not (Queue.is_empty pipeline.received)) then begin
@@ -172,6 +195,19 @@ module Make
 
   let batch operation_validator max_concurrency input =
     let pipeline = create max_concurrency input in
+    let rec loop () =
+      if is_empty pipeline then
+        Lwt.return pipeline.results
+      else
+        step operation_validator pipeline >>= fun () ->
+        loop ()
+    in
+    let work = loop () in
+    Lwt.on_cancel work (fun () -> cancel pipeline);
+    work
+
+  let batch_parsed operation_validator max_concurrency input =
+    let pipeline = create_parsed max_concurrency input in
     let rec loop () =
       if is_empty pipeline then
         Lwt.return pipeline.results

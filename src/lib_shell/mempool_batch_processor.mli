@@ -28,13 +28,25 @@ module type T = sig
   module Proto : Registered_protocol.T
   module Operation_validator : Operation_validator.T with module Proto = Proto
   type input = Operation_hash.t list
+  type input_parsed = Operation_validator.operation list
   type result =
     | Cannot_download of error list
     | Cannot_parse of error list
     | Cannot_validate of error list
     | Mempool_result of Operation_validator.result
   type output = result Operation_hash.Map.t
+
+  (** [batch ov max_concurrency input] processes the operations in [input]. It
+      does so by delegating protocol-specific tasks to [ov]. It is careful to
+      preserve the order of the input operations. The argument [max_xonxurrency]
+      limits the number of unresolved promises that are internally used during
+      the process. *)
   val batch: Operation_validator.t -> int -> input -> output Lwt.t
+
+  (** [batch ov max_concurrency input_parsed] is like [batch] but it starts with
+      already parsed input. *)
+  val batch_parsed: Operation_validator.t -> int -> input_parsed -> output Lwt.t
+
 end
 
 module Make
