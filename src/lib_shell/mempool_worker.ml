@@ -31,6 +31,7 @@ module type T = sig
 
   module Proto: Registered_protocol.T
   module Mempool_filters: Mempool_filters.T with module Proto = Proto
+  module Mempool_advertiser: Mempool_advertiser.T
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
   module Worker : Worker.T
@@ -58,7 +59,9 @@ module type T = sig
   val create :
     limits ->
     Mempool_helpers.chain ->
+    Mempool_helpers.head_info ->
     Mempool_filters.config ->
+    Mempool_advertiser.t ->
     t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
@@ -77,6 +80,8 @@ module type T = sig
 
   val status : t -> Worker_types.worker_status
 
+  val head : t -> State.Block.t
+
   val rpc_directory : t RPC_directory.t
 
 end
@@ -89,13 +94,16 @@ module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
     (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+    (Mempool_advertiser : Mempool_advertiser.T)
   : T
     with module Proto = Proto
      and module Mempool_filters = Mempool_filters
+     and module Mempool_advertiser = Mempool_advertiser
 = struct
 
   module Proto = Proto
   module Mempool_filters = Mempool_filters
+  module Mempool_advertiser = Mempool_advertiser
 
   (* used for rpc *)
   module Proto_services = Block_services.Make(Proto)(Proto)
@@ -413,8 +421,10 @@ module Make
     type parameters = {
       limits : limits ;
       chain : Mempool_helpers.chain ;
+      head_info : Mempool_helpers.head_info ;
       validation_state : Proto.validation_state ;
       filter_config : Mempool_filters.config ;
+      mempool_advertiser : Mempool_advertiser.t ;
     }
 
     (* internal worker state *)
@@ -431,13 +441,17 @@ module Make
         live_blocks : Block_hash.Set.t ;
         live_operations : Operation_hash.Set.t ;
 
+        current_head : State.Block.t ;
+        chain : Mempool_helpers.chain ;
+
+        mempool_advertiser : Mempool_advertiser.t ;
+
         operation_stream: (
           result *
           Operation.shell_header *
           Proto.operation_data
         ) Lwt_watcher.input;
 
-        chain : Mempool_helpers.chain ;
       }
 
     type view = {
@@ -484,17 +498,18 @@ module Make
   (*** prevalidation ****)
   open Validation_errors
 
-  let create ?protocol_data ~(block:Mempool_helpers.block) ~timestamp () =
-    let predecessor_fitness = block.header.shell.fitness in
-    let predecessor_timestamp = block.header.shell.timestamp in
-    let predecessor_level = block.header.shell.level in
-    let predecessor_hash = block.hash in
-    State.Block.context block.state >>= fun predecessor_context ->
+  let create
+      ?protocol_data
+      ~(chain:Mempool_helpers.chain)
+      ~(head_info:Mempool_helpers.head_info)
+      ~timestamp
+      () =
+    State.Block.context head_info.current_head >>= fun predecessor_context ->
     Context.reset_test_chain
-      predecessor_context predecessor_hash
+      predecessor_context head_info.current_head_hash
       timestamp >>= fun predecessor_context ->
     Context.reset_test_chain
-      predecessor_context predecessor_hash
+      predecessor_context head_info.current_head_hash
       timestamp >>= fun predecessor_context ->
     begin
       match protocol_data with
@@ -509,12 +524,12 @@ module Make
           | Some protocol_data -> return_some protocol_data
     end >>=? fun protocol_data ->
     Proto.begin_construction
-      ~chain_id: (State.Block.chain_id block.state)
+      ~chain_id:chain.id
       ~predecessor_context
-      ~predecessor_timestamp
-      ~predecessor_fitness
-      ~predecessor_level
-      ~predecessor:predecessor_hash
+      ~predecessor_timestamp:head_info.current_head_header.shell.timestamp
+      ~predecessor_fitness:head_info.current_head_header.shell.fitness
+      ~predecessor_level:head_info.current_head_header.shell.level
+      ~predecessor:head_info.current_head_hash
       ~timestamp
       ?protocol_data
       ()
@@ -601,21 +616,20 @@ module Make
     | Request.Validate parsed_op -> on_validate w parsed_op >>= return
 
   let on_launch (_ : t) (_ : Name.t) (parameters : Types.parameters) =
-    Chain.data parameters.chain.state >>= fun {
-      current_mempool = _mempool ;
-      live_blocks ; live_operations } ->
     (* remove all operations that are already included *)
     Operation_hash.Set.iter (fun hash ->
         ParsedCache.rem parsed_cache hash
-      ) live_operations;
+      ) parameters.head_info.live_operations;
     return {
+      chain = parameters.chain ;
       validation_state = parameters.validation_state ;
       cache = ValidatedCache.create () ;
       filter_config = parameters.filter_config ;
-      live_blocks ;
-      live_operations ;
+      live_blocks = parameters.head_info.live_blocks ;
+      live_operations = parameters.head_info.live_operations ;
+      current_head = parameters.head_info.current_head ;
+      mempool_advertiser = parameters.mempool_advertiser ;
       operation_stream = Lwt_watcher.create_input () ;
-      chain = parameters.chain ;
     }
 
   let on_close w =
@@ -631,13 +645,31 @@ module Make
     Worker.record_event w (Event.Request (r, st, Some errs)) ;
     Lwt.return (Error errs)
 
-  let on_completion w r _ st =
-    Worker.record_event w (Event.Request (Request.view r, st, None)) ;
-    Lwt.return_unit
+  let on_completion
+    : type r. t -> r Request.t -> r -> Worker_types.request_status -> unit Lwt.t
+    = fun w req res st ->
+      Worker.record_event w (Event.Request (Request.view req, st, None)) ;
+      let state = Worker.state w in
+      match req with
+      | Request.Validate op -> (* for typing the res *)
+          match res with
+          | Applied _ ->
+              Mempool_advertiser.applied state.mempool_advertiser op.hash
+          | Branch_delayed _ ->
+              Mempool_advertiser.branch_delayed state.mempool_advertiser op.hash
+          | Branch_refused _
+          | Refused _
+          | Refused_by_pre_filter | Refused_by_post_filter
+          | Duplicate | Not_in_branch ->
+              Lwt.return_unit
 
   let table = Worker.create_table Queue
 
-  let create limits (chain: Mempool_helpers.chain) filter_config  =
+  let create limits
+      (chain: Mempool_helpers.chain)
+      head_info
+      filter_config
+      mempool_advertiser  =
     let module Handlers = struct
       type self = t
       let on_launch = on_launch
@@ -647,14 +679,17 @@ module Make
       let on_no_request _ = return_unit
       let on_request = on_request
     end in
-    Mempool_helpers.head_of_chain chain >>= fun block ->
     let timestamp = Time.now () in
-    create ~block ~timestamp () >>=? fun validation_state ->
+    create ~chain ~head_info ~timestamp () >>=? fun validation_state ->
     Worker.launch
       table
       limits.worker_limits
       chain.Mempool_helpers.id
-      { limits ; chain ; validation_state ; filter_config }
+      { limits ;
+        chain ; head_info ;
+        validation_state ;
+        filter_config ;
+        mempool_advertiser }
       (module Handlers)
 
   (* Exporting functions *)
@@ -690,6 +725,10 @@ module Make
     return block_result.fitness
 
   let status t = Worker.status t
+
+  let head t =
+    let state = Worker.state t in
+    state.current_head
 
   let pending_operations : t -> Proto_services.Mempool.t = fun t ->
     let state = Worker.state t in

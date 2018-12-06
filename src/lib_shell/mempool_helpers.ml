@@ -35,15 +35,19 @@ let chain db =
   let id = State.Chain.id state in
   { id ; db ; state }
 
-type block = {
-  hash : Block_hash.t ;
-  state : State.Block.t ;
-  header : Block_header.t ;
+type head_info = {
+  current_head : State.Block.t ;
+  current_head_hash : Block_hash.t ;
+  current_head_header : Block_header.t ;
+  live_blocks: Block_hash.Set.t ;
+  live_operations: Operation_hash.Set.t ;
 }
 
-let head_of_chain (chain: chain) =
-  Chain.data chain.state >>= fun { current_head = state } ->
-  let header = State.Block.header state in
-  let hash = State.Block.hash state in
-  Lwt.return { hash ; state ; header }
+let head_info_of_chain chain =
+  Chain.data chain.state >>= fun { current_head ; live_operations ; live_blocks } ->
+  let current_head_header = State.Block.header current_head in
+  let current_head_hash = State.Block.hash current_head in
+  Lwt.return
+    { current_head ; current_head_hash ; current_head_header ;
+      live_blocks ; live_operations }
 

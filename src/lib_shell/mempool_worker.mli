@@ -31,6 +31,7 @@ module type T = sig
 
   module Proto: Registered_protocol.T
   module Mempool_filters: Mempool_filters.T with module Proto = Proto
+  module Mempool_advertiser: Mempool_advertiser.T
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
   module Worker : Worker.T
@@ -58,7 +59,9 @@ module type T = sig
   val create :
     limits ->
     Mempool_helpers.chain ->
+    Mempool_helpers.head_info ->
     Mempool_filters.config ->
+    Mempool_advertiser.t ->
     t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
@@ -77,6 +80,8 @@ module type T = sig
 
   val status : t -> Worker_types.worker_status
 
+  val head : t -> State.Block.t
+
   val rpc_directory : t RPC_directory.t
 
 end
@@ -89,6 +94,8 @@ module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
     (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+    (Mempool_advertiser : Mempool_advertiser.T)
   : T
     with module Proto = Proto
      and module Mempool_filters = Mempool_filters
+     and module Mempool_advertiser = Mempool_advertiser

@@ -31,6 +31,7 @@ type limits = {
   worker_max_size_parsed_cache: int ;
   peer_worker_limits: Mempool_peer_worker.limits ;
   peer_worker_max_pending_requests: int ;
+  advertiser_limits: Mempool_advertiser.limits ;
 }
 
 (** A mempool validator. *)
@@ -77,6 +78,12 @@ val limits: t -> limits
 val chain: t -> Mempool_helpers.chain
 
 
-val status: t -> Worker_types.worker_status * Worker_types.worker_status P2p_peer.Id.Map.t
+type status = {
+  advertiser : Worker_types.worker_status ;
+  worker : Worker_types.worker_status ;
+  peer_workers : Worker_types.worker_status P2p_peer.Id.Map.t ;
+}
+
+val status: t -> status
 
 val rpc_directory : t option RPC_directory.t

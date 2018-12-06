@@ -33,7 +33,7 @@ module type T = sig
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
-  val create : limits -> Distributed_db.chain_db -> State.Block.t -> t tzresult Lwt.t
+  val create : limits -> Mempool_helpers.chain -> Mempool_helpers.head_info -> t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal state for later advertisement *)
@@ -276,13 +276,13 @@ module M : T = struct
       Lwt.return_unit
   end
 
-  let create limits chain_db head =
+  let create limits (chain: Mempool_helpers.chain) (head_info: Mempool_helpers.head_info) =
     let min_wait = limits.minimum_wait_between_advertisments in
     Worker.launch
       table
       limits.worker_limits
-      (State.Block.hash head)
-      { limits ; chain_db ; head ; min_wait }
+      head_info.current_head_hash
+      { limits ; chain_db = chain.db ; head = head_info.current_head ; min_wait }
       (module Handlers)
 
   let shutdown w =
