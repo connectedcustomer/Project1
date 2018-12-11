@@ -240,8 +240,8 @@ module Create (Pre : PRE) : T = struct
     end
 
   let new_head _head =
-    let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
-    let gossip_config = Mempool_advertiser.gossip_config !mempool_advertiser_ref in
+    let filter_config = !filter_config in
+    let gossip_config = !gossip_config in
     Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
     shutdown () >>= fun recycling ->
     Mempool_advertiser.create
@@ -276,6 +276,7 @@ module Create (Pre : PRE) : T = struct
       (fun () () obj ->
          let config = Data_encoding.Json.destruct Plugin.Filters.config_encoding obj in
          filter_config := config ;
+         Mempool_worker.update_filter_config !mempool_worker_ref config ;
          return_unit) |> fun dir ->
     RPC_directory.register
       dir
@@ -291,6 +292,7 @@ module Create (Pre : PRE) : T = struct
       (fun () () obj ->
          let config = Data_encoding.Json.destruct Plugin.Gossip.config_encoding obj in
          gossip_config := config ;
+         Mempool_advertiser.update_gossip_config !mempool_advertiser_ref config ;
          return_unit)
 
   let advertise () =
