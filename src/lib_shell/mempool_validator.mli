@@ -47,6 +47,8 @@ type recycling
 (** Creates/tear-down a new prevalidator context. *)
 val create:
   limits ->
+  ?initial_filters_configuration:Data_encoding.json ->
+  ?initial_gossip_configuration:Data_encoding.json ->
   (module Proto_plugin.T) ->
   Distributed_db.chain_db ->
   t tzresult Lwt.t

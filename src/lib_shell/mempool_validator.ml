@@ -306,6 +306,8 @@ end
    these reasons, a function (rather than a functor) is necessary. *)
 let create
     limits
+    ?initial_filters_configuration
+    ?initial_gossip_configuration
     (module Plugin: Proto_plugin.T)
     chain_db =
 
@@ -319,8 +321,12 @@ let create
       (Proto)
       (Plugin.Gossip) in
   let gossip_config =
-    (* NOTE: recycling overrules this, but we should still load a custom default *)
-    Plugin.Gossip.default_config in
+    let open Option in
+    unopt
+      ~default:Plugin.Gossip.default_config
+      (map
+         ~f:(Data_encoding.Json.destruct Plugin.Gossip.config_encoding)
+         initial_gossip_configuration) in
   Mempool_advertiser.create
     limits.advertiser_limits
     chain head_info
@@ -333,8 +339,12 @@ let create
       (Plugin.Filters)
       (Mempool_advertiser) in
   let filter_config =
-    (* NOTE: recycling overrules this, but we should still load a custom default *)
-    Plugin.Filters.default_config in
+    let open Option in
+    unopt
+      ~default:Plugin.Filters.default_config
+      (map
+         ~f:(Data_encoding.Json.destruct Plugin.Filters.config_encoding)
+         initial_filters_configuration) in
   Mempool_worker.create
     limits.worker_limits
     chain
