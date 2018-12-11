@@ -753,6 +753,21 @@ module Make(Proto : PROTO)(Next_proto : PROTO) = struct
           ~output: unit
           RPC_path.(path / "filter")
 
+      let get_gossip path =
+        RPC_service.get_service
+          ~description: "Get the configuration of the advertiser gossip."
+          ~query: RPC_query.empty
+          ~output: json
+          RPC_path.(path / "gossip")
+
+      let set_gossip path =
+        RPC_service.post_service
+          ~description: "Set the configuration of the advertiser gossip."
+          ~query: RPC_query.empty
+          ~input: json
+          ~output: unit
+          RPC_path.(path / "gossip")
+
     end
 
     let live_blocks =

@@ -23,36 +23,48 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Type of a protocol-specific mempool filter plug-in. *)
-module type T = sig
+type config =
+  { allow_delayed_endorsements : bool ;
+    allow_delayed_voting : bool ;
+    allow_other_delayed : bool }
 
-  (** Type of protocol-specific mempool configuration, as specifiable
-      in the node's configuration file, and updatable via RPCs. *)
-  type config
+let default_allow_delayed_endorsements = true
+let default_allow_delayed_voting = false
+let default_allow_other_delayed = false
 
-  (** Formatting of {!config} for the configuration file and RPCs. *)
-  val config_encoding : config Data_encoding.t
+let config_encoding : config Data_encoding.t =
+  let open Data_encoding in
+  conv
+    (fun { allow_delayed_endorsements ;
+           allow_delayed_voting ;
+           allow_other_delayed } ->
+      (allow_delayed_endorsements,
+       allow_delayed_voting,
+       allow_other_delayed))
+    (fun (allow_delayed_endorsements,
+          allow_delayed_voting,
+          allow_other_delayed) ->
+      { allow_delayed_endorsements ;
+        allow_delayed_voting ;
+        allow_other_delayed })
+    (obj3
+       (dft "allow_delayed_endorsements" bool default_allow_delayed_endorsements)
+       (dft "allow_delayed_voting" bool default_allow_delayed_voting)
+       (dft "allow_other_delayed" bool default_allow_other_delayed))
 
-  val pp_config : Format.formatter -> config -> unit
+let pp_config ppf config =
+  let obj = Data_encoding.Json.construct config_encoding config in
+  Data_encoding.Json.pp ppf obj
 
-  (** Default configuration value, used when none is specified. *)
-  val default_config : config
+let default_config =
+  { allow_delayed_endorsements = default_allow_delayed_endorsements ;
+    allow_delayed_voting = default_allow_delayed_voting ;
+    allow_other_delayed = default_allow_other_delayed }
 
-  (** The protocol this plug-in understands. *)
-  module Proto : Registered_protocol.T
+module Proto = Tezos_embedded_protocol_alpha.Registerer.Registered
 
-  (** Tells if an operation should be kept and propagated before even running it. *)
-  val pre_filter : config -> Proto.operation_data -> bool
-
-  (** Tells if an operation should be kept and propagated considering its result. *)
-  val post_filter : config ->
-    validation_state_before: Proto.validation_state ->
-    validation_state_after: Proto.validation_state ->
-    Proto.operation_data * Proto.operation_receipt -> bool Lwt.t
-end
-
-(** Registers a mempool plug-in for a specific protocol (according to its [Proto.hash]). *)
-val register : (module T) -> unit
-
-(** Looks for a mempool plug-in for a specific protocol. *)
-val find : Protocol_hash.t -> (module T) option
+let gossip_branch_delayed config op =
+  match Proto.acceptable_passes op with
+  | [ 0 ] -> config.allow_delayed_endorsements
+  | [ 1 ] -> config.allow_delayed_voting
+  | _ -> config.allow_other_delayed

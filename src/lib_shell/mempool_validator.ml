@@ -40,6 +40,7 @@ type limits = {
 type recycling = {
   operations: Operation_hash.t list P2p_peer.Id.Map.t ;
   filter_config: Data_encoding.json ;
+  gossip_config: Data_encoding.json ;
 }
 
 
@@ -121,12 +122,14 @@ let () =
 *)
 module type PRE = sig
   module Proto: Registered_protocol.T
-  module Mempool_advertiser: Mempool_advertiser.T
-  module Mempool_filters: Mempool_filters.T
+  module Plugin: Proto_plugin.T
     with module Proto = Proto
+  module Mempool_advertiser: Mempool_advertiser.T
+    with module Proto = Proto
+     and module Gossip = Plugin.Gossip
   module Mempool_worker: Mempool_worker.T
     with module Proto = Proto
-     and module Mempool_filters = Mempool_filters
+     and module Filters = Plugin.Filters
      and module Mempool_advertiser = Mempool_advertiser
   val mempool_advertiser: Mempool_advertiser.t
   val mempool_worker: Mempool_worker.t
@@ -151,7 +154,8 @@ module Create (Pre : PRE) : T = struct
   let get_mempool_worker () = !mempool_worker_ref
   let map_mempool_worker f = f !mempool_worker_ref
 
-  let filter_config = ref Mempool_filters.default_config
+  let filter_config = ref Plugin.Filters.default_config
+  let gossip_config = ref Plugin.Gossip.default_config
 
   (* Typical number of connected peers: 10-100 *)
   let mempool_peer_workers = P2p_peer.Id.Table.create 64
@@ -198,17 +202,29 @@ module Create (Pre : PRE) : T = struct
     let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
     let filter_config =
       Data_encoding.Json.construct
-        Mempool_filters.config_encoding filter_config in
+        Plugin.Filters.config_encoding filter_config in
+    let gossip_config = Mempool_advertiser.gossip_config !mempool_advertiser_ref in
+    let gossip_config =
+      Data_encoding.Json.construct
+        Plugin.Gossip.config_encoding gossip_config in
     Mempool_worker.shutdown !mempool_worker_ref >>= fun () ->
     Mempool_advertiser.shutdown !mempool_advertiser_ref >>= fun () ->
-    Lwt.return { operations ; filter_config }
+    Lwt.return { operations ; filter_config ; gossip_config }
 
-  let recycle { operations ; filter_config } =
+  let recycle { operations ; filter_config ; gossip_config } =
     begin
       try
         let filter_config =
-          Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
+          Data_encoding.Json.destruct Plugin.Filters.config_encoding filter_config in
         Mempool_worker.update_filter_config !mempool_worker_ref filter_config
+      with
+      | _ -> () (* TODO: only catch JSON decoding errors *)
+    end ;
+    begin
+      try
+        let gossip_config =
+          Data_encoding.Json.destruct Plugin.Gossip.config_encoding gossip_config in
+        Mempool_advertiser.update_gossip_config !mempool_advertiser_ref gossip_config
       with
       | _ -> () (* TODO: only catch JSON decoding errors *)
     end ;
@@ -225,11 +241,19 @@ module Create (Pre : PRE) : T = struct
 
   let new_head _head =
     let filter_config = Mempool_worker.filter_config !mempool_worker_ref in
+    let gossip_config = Mempool_advertiser.gossip_config !mempool_advertiser_ref in
     Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
     shutdown () >>= fun recycling ->
-    Mempool_advertiser.create limits.advertiser_limits chain head_info >>=? fun ma ->
+    Mempool_advertiser.create
+      limits.advertiser_limits
+      chain head_info
+      gossip_config >>=? fun ma ->
     mempool_advertiser_ref := ma ;
-    Mempool_worker.create limits.worker_limits chain head_info filter_config ma >>=? fun mw ->
+    Mempool_worker.create
+      limits.worker_limits
+      chain head_info
+      filter_config
+      ma >>=? fun mw ->
     mempool_worker_ref := mw;
     recycle recycling >>= fun () ->
     return_unit
@@ -244,14 +268,29 @@ module Create (Pre : PRE) : T = struct
       (fun () () () ->
          let obj =
            Data_encoding.Json.construct
-             Mempool_filters.config_encoding !filter_config in
+             Plugin.Filters.config_encoding !filter_config in
          return obj) |> fun dir ->
     RPC_directory.register
       dir
       (Proto_services.S.Mempool.set_filter RPC_path.open_root)
       (fun () () obj ->
-         let config = Data_encoding.Json.destruct Mempool_filters.config_encoding obj in
+         let config = Data_encoding.Json.destruct Plugin.Filters.config_encoding obj in
          filter_config := config ;
+         return_unit) |> fun dir ->
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.get_gossip RPC_path.open_root)
+      (fun () () () ->
+         let obj =
+           Data_encoding.Json.construct
+             Plugin.Gossip.config_encoding !gossip_config in
+         return obj) |> fun dir ->
+    RPC_directory.register
+      dir
+      (Proto_services.S.Mempool.set_gossip RPC_path.open_root)
+      (fun () () obj ->
+         let config = Data_encoding.Json.destruct Plugin.Gossip.config_encoding obj in
+         gossip_config := config ;
          return_unit)
 
   let advertise () =
@@ -265,27 +304,35 @@ end
    these reasons, a function (rather than a functor) is necessary. *)
 let create
     limits
-    (module Mempool_filters: Mempool_filters.T)
+    (module Plugin: Proto_plugin.T)
     chain_db =
 
-  let module Proto = Mempool_filters.Proto in
+  let module Proto = Plugin.Proto in
 
   let chain = Mempool_helpers.chain chain_db in
   Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
 
-  let module Mempool_advertiser = Mempool_advertiser.Make(Proto) in
+  let module Mempool_advertiser =
+    Mempool_advertiser.Make
+      (Proto)
+      (Plugin.Gossip) in
+  let gossip_config =
+    (* NOTE: recycling overrules this, but we should still load a custom default *)
+    Plugin.Gossip.default_config in
   Mempool_advertiser.create
-    limits.advertiser_limits chain head_info >>=? fun mempool_advertiser ->
+    limits.advertiser_limits
+    chain head_info
+    gossip_config >>=? fun mempool_advertiser ->
 
   let module Mempool_worker =
     Mempool_worker.Make
       (struct let max_size_parsed_cache = limits.worker_max_size_parsed_cache end)
       (Proto)
-      (Mempool_filters)
+      (Plugin.Filters)
       (Mempool_advertiser) in
   let filter_config =
     (* NOTE: recycling overrules this, but we should still load a custom default *)
-    Mempool_filters.default_config in
+    Plugin.Filters.default_config in
   Mempool_worker.create
     limits.worker_limits
     chain
@@ -295,9 +342,9 @@ let create
 
   let module Pre : PRE = struct
     module Proto = Proto
+    module Plugin = Plugin
     module Mempool_advertiser = Mempool_advertiser
     module Mempool_worker = Mempool_worker
-    module Mempool_filters = Mempool_filters
     let mempool_advertiser = mempool_advertiser
     let mempool_worker = mempool_worker
     let limits = limits

@@ -31,7 +31,7 @@ type limits = {
 module type T = sig
 
   module Proto: Registered_protocol.T
-  module Mempool_filters: Mempool_filters.T with module Proto = Proto
+  module Filters: Proto_plugin.FILTERS with module Proto = Proto
   module Mempool_advertiser: Mempool_advertiser.T
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
@@ -61,7 +61,7 @@ module type T = sig
     limits ->
     Mempool_helpers.chain ->
     Mempool_helpers.head_info ->
-    Mempool_filters.config ->
+    Filters.config ->
     Mempool_advertiser.t ->
     t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
@@ -74,8 +74,8 @@ module type T = sig
 
   val chain : t -> Mempool_helpers.chain
 
-  val update_filter_config : t -> Mempool_filters.config -> unit
-  val filter_config : t -> Mempool_filters.config
+  val update_filter_config : t -> Filters.config -> unit
+  val filter_config : t -> Filters.config
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 
@@ -94,16 +94,16 @@ end
 module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
-    (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+    (Filters: Proto_plugin.FILTERS with module Proto = Proto)
     (Mempool_advertiser : Mempool_advertiser.T with module Proto = Proto)
   : T
     with module Proto = Proto
-     and module Mempool_filters = Mempool_filters
+     and module Filters = Filters
      and module Mempool_advertiser = Mempool_advertiser
 = struct
 
   module Proto = Proto
-  module Mempool_filters = Mempool_filters
+  module Filters = Filters
   module Mempool_advertiser = Mempool_advertiser
 
   (* used for rpc *)
@@ -230,7 +230,7 @@ module Make
   module Event = struct
     type t =
       | Request of (Request.view * Worker_types.request_status * error list option)
-      | Filter_config_update of Mempool_filters.config
+      | Filter_config_update of Filters.config
       | Debug of string
 
     let level req =
@@ -249,7 +249,7 @@ module Make
             (fun msg -> Debug msg) ;
           case (Tag 1)
             ~title:"Filter config update"
-            (obj1 (req "config" Mempool_filters.config_encoding))
+            (obj1 (req "config" Filters.config_encoding))
             (function Filter_config_update config -> Some config | _ -> None)
             (fun config -> Filter_config_update config) ;
           case (Tag 2)
@@ -272,7 +272,7 @@ module Make
       | Debug msg -> Format.fprintf ppf "%s" msg
       | Filter_config_update config ->
           Format.fprintf ppf "Updated filter configuration: %a"
-            Mempool_filters.pp_config config
+            Filters.pp_config config
       | Request (view, { pushed ; treated ; completed }, None)  ->
           Format.fprintf ppf
             "@[<v 0>%a@,Pushed: %a, Treated: %a, Completed: %a@]"
@@ -424,7 +424,7 @@ module Make
       chain : Mempool_helpers.chain ;
       head_info : Mempool_helpers.head_info ;
       validation_state : Proto.validation_state ;
-      filter_config : Mempool_filters.config ;
+      filter_config : Filters.config ;
       mempool_advertiser : Mempool_advertiser.t ;
     }
 
@@ -436,7 +436,7 @@ module Make
 
         cache : ValidatedCache.t ;
 
-        mutable filter_config : Mempool_filters.config ;
+        mutable filter_config : Filters.config ;
 
         (* live blocks and operations, initialized at worker launch *)
         live_blocks : Block_hash.Set.t ;
@@ -457,7 +457,7 @@ module Make
 
     type view = {
       cache : ValidatedCache.t ;
-      filter_config : Mempool_filters.config ;
+      filter_config : Filters.config ;
     }
 
     let view (state : state) _ : view =
@@ -470,7 +470,7 @@ module Make
         (fun (cache, filter_config) -> { cache ; filter_config })
         (obj2
            (req "cache" ValidatedCache.encoding)
-           (req "filter_config" Mempool_filters.config_encoding))
+           (req "filter_config" Filters.config_encoding))
 
     let pp ppf { cache } =
       ValidatedCache.pp
@@ -541,7 +541,7 @@ module Make
     else if not (Block_hash.Set.mem op.raw.Operation.shell.branch state.live_blocks) then
       Lwt.return (None,Not_in_branch)
     else
-      match Mempool_filters.pre_filter state.filter_config op.protocol_data with
+      match Filters.pre_filter state.filter_config op.protocol_data with
       | false -> Lwt.return (None, Refused_by_pre_filter)
       | true ->
           Proto.apply_operation state.validation_state
@@ -554,7 +554,7 @@ module Make
                  | `Permanent -> Refused errors
                  | `Temporary -> Branch_delayed errors)
           | Ok (validation_state, receipt) ->
-              Mempool_filters.post_filter
+              Filters.post_filter
                 state.filter_config
                 ~validation_state_before:state.validation_state
                 ~validation_state_after:validation_state

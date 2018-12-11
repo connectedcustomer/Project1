@@ -23,24 +23,6 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-module type T = sig
-  type config
-  val config_encoding : config Data_encoding.t
-  val pp_config : Format.formatter -> config -> unit
-  val default_config : config
-  module Proto : Registered_protocol.T
-  val pre_filter : config -> Proto.operation_data -> bool
-  val post_filter : config ->
-    validation_state_before: Proto.validation_state ->
-    validation_state_after: Proto.validation_state ->
-    Proto.operation_data * Proto.operation_receipt -> bool Lwt.t
-end
-
-let table : (module T) Protocol_hash.Table.t =
-  Protocol_hash.Table.create 5
-
-let register (module Filter : T) =
-  assert (not (Protocol_hash.Table.mem table Filter.Proto.hash)) ;
-  Protocol_hash.Table.add table Filter.Proto.hash (module Filter)
-
-let find = Protocol_hash.Table.find_opt table
+module Proto = Tezos_embedded_protocol_alpha.Registerer.Registered
+module Filters = Filters
+module Gossip = Gossip

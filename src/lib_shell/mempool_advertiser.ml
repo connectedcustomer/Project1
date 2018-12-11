@@ -31,11 +31,17 @@ type limits = {
 module type T = sig
 
   module Proto : Registered_protocol.T
+  module Gossip : Proto_plugin.GOSSIP with module Proto = Proto
 
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
-  val create : limits -> Mempool_helpers.chain -> Mempool_helpers.head_info -> t tzresult Lwt.t
+  val create :
+    limits ->
+    Mempool_helpers.chain ->
+    Mempool_helpers.head_info ->
+    Gossip.config ->
+    t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal state for later advertisement *)
@@ -48,11 +54,22 @@ module type T = sig
   (** introspection *)
   val status : t -> Worker_types.worker_status
 
+  val update_gossip_config : t -> Gossip.config -> unit
+  val gossip_config : t -> Gossip.config
+
+
 end
 
-module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = struct
+module Make
+    (Proto : Registered_protocol.T)
+    (Gossip : Proto_plugin.GOSSIP with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Gossip = Gossip
+= struct
 
   module Proto = Proto
+  module Gossip = Gossip
 
   module Log = Tezos_stdlib.Logging.Make(struct
       let name = "node.mempool_advertiser"
@@ -170,6 +187,7 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
       chain_db : Distributed_db.chain_db ;
       head : State.Block.t ;
       min_wait : float ;
+      gossip_config : Gossip.config ;
     }
 
     (* internal worker state *)
@@ -185,6 +203,7 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
            stored in the `throttle` field. This limits the rate of
            advertisements. *)
         mutable throttle : unit Lwt.t ;
+        mutable gossip_config : Gossip.config ;
         parameters : parameters ;
       }
 
@@ -209,9 +228,6 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
   let table = Worker.create_table Queue
   type t = Worker.infinite Worker.queue Worker.t
 
-  let is_endorsement (op : Proto.operation) =
-    Proto.acceptable_passes op = [0]
-
   let send_advertisement (state : Types.state) =
     let mempool =
       { state.rev_mempool with
@@ -233,7 +249,7 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
               known_valid = op_hash :: state.rev_mempool.known_valid } ;
           Ok ()
       | Request.Include_branch_delayed (op_hash, op) ->
-          begin if is_endorsement op then
+          begin if Gossip.gossip_branch_delayed state.gossip_config op then
               state.rev_mempool <-
                 { state.rev_mempool with
                   pending = Operation_hash.Set.add op_hash state.rev_mempool.pending }
@@ -266,10 +282,11 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
 
   module Handlers = struct
     type self = t
-    let on_launch _ _name parameters =
+    let on_launch _ _name (parameters : Types.parameters) =
       return { Types.
                rev_mempool = Mempool.empty ;
                throttle = Lwt.return_unit ;
+               gossip_config = parameters.gossip_config ;
                parameters ;
              }
     let on_request t req = handle_request t req
@@ -285,13 +302,21 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
       Lwt.return_unit
   end
 
-  let create limits (chain: Mempool_helpers.chain) (head_info: Mempool_helpers.head_info) =
+  let create limits
+      (chain: Mempool_helpers.chain)
+      (head_info: Mempool_helpers.head_info)
+      gossip_config
+    =
     let min_wait = limits.minimum_wait_between_advertisments in
     Worker.launch
       table
       limits.worker_limits
       head_info.current_head_hash
-      { limits ; chain_db = chain.db ; head = head_info.current_head ; min_wait }
+      { limits ;
+        chain_db = chain.db ;
+        head = head_info.current_head ;
+        min_wait ;
+        gossip_config }
       (module Handlers)
 
   let shutdown w =
@@ -305,5 +330,12 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
     Worker.push_request t Advertise
 
   let status w = Worker.status w
+
+  let update_gossip_config t gossip_config =
+    let state = Worker.state t in
+    state.gossip_config <- gossip_config
+  let gossip_config t =
+    let state = Worker.state t in
+    state.gossip_config
 
 end

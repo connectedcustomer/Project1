@@ -31,11 +31,17 @@ type limits = {
 module type T = sig
 
   module Proto : Registered_protocol.T
+  module Gossip : Proto_plugin.GOSSIP with module Proto = Proto
 
   type t
 
   (** Creates/tear-down a new mempool advertiser. *)
-  val create : limits -> Mempool_helpers.chain -> Mempool_helpers.head_info -> t tzresult Lwt.t
+  val create :
+    limits ->
+    Mempool_helpers.chain ->
+    Mempool_helpers.head_info ->
+    Gossip.config ->
+    t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
 
   (** add the given operation to the internal queue for later advertisement *)
@@ -48,6 +54,15 @@ module type T = sig
   (** introspection *)
   val status : t -> Worker_types.worker_status
 
+  val update_gossip_config : t -> Gossip.config -> unit
+  val gossip_config : t -> Gossip.config
+
+
 end
 
-module Make (Proto : Registered_protocol.T) : T with module Proto = Proto
+module Make
+    (Proto : Registered_protocol.T)
+    (Gossip : Proto_plugin.GOSSIP with module Proto = Proto)
+  : T
+    with module Proto = Proto
+     and module Gossip = Gossip

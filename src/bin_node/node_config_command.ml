@@ -25,8 +25,8 @@
 (*****************************************************************************)
 
 let () =
-  Mempool_filters.register
-    (module Tezos_mempool_alpha.Filter)
+  Proto_plugin.register
+    (module Tezos_mempool_alpha.Plugin)
 
 (** Commands *)
 

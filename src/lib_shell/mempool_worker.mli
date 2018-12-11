@@ -31,7 +31,7 @@ type limits = {
 module type T = sig
 
   module Proto: Registered_protocol.T
-  module Mempool_filters: Mempool_filters.T with module Proto = Proto
+  module Filters: Proto_plugin.FILTERS with module Proto = Proto
   module Mempool_advertiser: Mempool_advertiser.T
 
   module Proto_services : (module type of Block_services.Make(Proto)(Proto))
@@ -61,7 +61,7 @@ module type T = sig
     limits ->
     Mempool_helpers.chain ->
     Mempool_helpers.head_info ->
-    Mempool_filters.config ->
+    Filters.config ->
     Mempool_advertiser.t ->
     t tzresult Lwt.t
   val shutdown : t -> unit Lwt.t
@@ -74,8 +74,8 @@ module type T = sig
 
   val chain : t -> Mempool_helpers.chain
 
-  val update_filter_config : t -> Mempool_filters.config -> unit
-  val filter_config : t -> Mempool_filters.config
+  val update_filter_config : t -> Filters.config -> unit
+  val filter_config : t -> Filters.config
 
   val fitness : t -> Fitness.t tzresult Lwt.t
 
@@ -94,9 +94,9 @@ end
 module Make
     (Static : STATIC)
     (Proto : Registered_protocol.T)
-    (Mempool_filters: Mempool_filters.T with module Proto = Proto)
+    (Filters: Proto_plugin.FILTERS with module Proto = Proto)
     (Mempool_advertiser : Mempool_advertiser.T with module Proto = Proto)
   : T
     with module Proto = Proto
-     and module Mempool_filters = Mempool_filters
+     and module Filters = Filters
      and module Mempool_advertiser = Mempool_advertiser
