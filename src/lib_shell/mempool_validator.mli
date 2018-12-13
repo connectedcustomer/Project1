@@ -27,8 +27,8 @@
 
 
 type limits = {
-  worker_limits: Mempool_worker.limits ;
-  worker_max_size_parsed_cache: int ;
+  operation_validator_limits: Operation_validator.limits ;
+  operation_validator_max_size_parsed_cache: int ;
   peer_worker_limits: Mempool_peer_worker.limits ;
   peer_worker_max_pending_requests: int ;
   advertiser_limits: Mempool_advertiser.limits ;
