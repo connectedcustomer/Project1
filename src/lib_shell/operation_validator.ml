@@ -193,18 +193,15 @@ module Make
       )
 
   module Log = Tezos_stdlib.Logging.Make(struct
-      let name = "node.mempool_validator"
+      let name = "node.shell.mempool.operation_validator"
     end)
 
   module Name = struct
     type t = Chain_id.t
     let encoding = Chain_id.encoding
     let base =
-      let proto_hash =
-        let _: string = Format.flush_str_formatter () in
-        Format.fprintf Format.str_formatter "%a" Protocol_hash.pp Proto.hash;
-        Format.flush_str_formatter () in
-      [ "node"; "mempool"; "worker"; proto_hash ]
+      let proto_hash = Format.asprintf "%a" Protocol_hash.pp Proto.hash in
+      [ "node" ; "shell" ; "operation_validator" ; proto_hash ]
     let pp = Chain_id.pp_short
   end
 

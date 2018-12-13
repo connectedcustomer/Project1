@@ -107,7 +107,7 @@ module Make
           (fun result -> Mempool_result result) ]
 
   module Log = Tezos_stdlib.Logging.Make(struct
-      let name = "node.mempool.peer_worker"
+      let name = "node.shell.mempool.peer_worker"
     end)
 
 
@@ -253,11 +253,8 @@ module Make
     type t = P2p_peer.Id.t
     let encoding = P2p_peer.Id.encoding
     let base =
-      let proto_hash =
-        let _: string = Format.flush_str_formatter () in
-        Format.fprintf Format.str_formatter "%a" Protocol_hash.pp Proto.hash;
-        Format.flush_str_formatter () in
-      [ "node"; "mempool"; "peer_worker"; proto_hash ]
+      let proto_hash = Format.asprintf "%a" Protocol_hash.pp Proto.hash in
+      [ "node" ; "shell" ; "mempool" ; "peer_worker" ; proto_hash ]
     let pp = P2p_peer.Id.pp
   end
 
