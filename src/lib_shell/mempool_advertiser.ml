@@ -55,13 +55,15 @@ module Make (Proto : Registered_protocol.T) : T with module Proto = Proto = stru
   module Proto = Proto
 
   module Log = Tezos_stdlib.Logging.Make(struct
-      let name = "node.mempool_advertiser"
+      let name = "node.shell.mempool.advertiser"
     end)
 
   module Name = struct
     type t = Block_hash.t
     let encoding = Block_hash.encoding
-    let base = [ "node" ; "mempool" ; "advertiser" ]
+    let base =
+      let proto_hash = Format.asprintf "%a" Protocol_hash.pp Proto.hash in
+      [ "node" ; "shell" ; "mempool" ; "advertiser" ; proto_hash ]
     let pp = Block_hash.pp_short
   end
 
