@@ -34,13 +34,13 @@ type limits = {
 
 module type T = sig
   module Proto: Registered_protocol.T
-  module Mempool_worker: Mempool_worker.T
+  module Operation_validator: Operation_validator.T
     with module Proto = Proto
 
   type t
   type input = Operation_hash.t list
 
-  val create: limits -> P2p_peer.Id.t -> Mempool_worker.t -> t tzresult Lwt.t
+  val create: limits -> P2p_peer.Id.t -> Operation_validator.t -> t tzresult Lwt.t
   val shutdown: t -> input Lwt.t
 
   val validate: t -> input -> unit tzresult Lwt.t
@@ -57,24 +57,24 @@ end
 module Make
     (Static: STATIC)
     (Proto: Registered_protocol.T)
-    (Mempool_worker: Mempool_worker.T with module Proto = Proto)
+    (Operation_validator: Operation_validator.T with module Proto = Proto)
   : T
     with module Proto = Proto
-     and module Mempool_worker = Mempool_worker
+     and module Operation_validator = Operation_validator
 = struct
 
   (* 0. Prelude: set up base modules and types *)
   (* See interface file for info if needed. *)
 
-  module Proto = Mempool_worker.Proto
-  module Mempool_worker = Mempool_worker
+  module Proto = Operation_validator.Proto
+  module Operation_validator = Operation_validator
 
   type input = Operation_hash.t list
   type result =
     | Cannot_download of error list
     | Cannot_parse of error list
     | Cannot_validate of error list
-    | Mempool_result of Mempool_worker.result
+    | Mempool_result of Operation_validator.result
   type output = result Operation_hash.Map.t
 
   let pp_input ppf input =
@@ -102,7 +102,7 @@ module Make
           (fun errs -> Cannot_validate errs) ;
         case (Tag 3)
           ~title:"Validation result"
-          (obj1 (req "validation_result" Mempool_worker.result_encoding))
+          (obj1 (req "validation_result" Operation_validator.result_encoding))
           (function Mempool_result result -> Some result | _ -> None)
           (fun result -> Mempool_result result) ]
 
@@ -114,13 +114,13 @@ module Make
   (* 1. Core: the carefully scheduled work performed by the worker *)
 
   module Work : sig
-    val process_batch: Mempool_worker.t -> int -> input -> output Lwt.t
+    val work: Operation_validator.t -> int -> input -> output Lwt.t
   end = struct
     type t = {
       pool: unit Lwt_pool.t;
       received: Operation_hash.t Queue.t;
       downloading: (Operation_hash.t * Operation.t tzresult Lwt.t) Queue.t;
-      applying: (Mempool_worker.operation * Mempool_worker.result tzresult Lwt.t) Queue.t;
+      applying: (Operation_validator.operation * Operation_validator.result tzresult Lwt.t) Queue.t;
       mutable results: result Operation_hash.Map.t
     }
 
@@ -179,11 +179,11 @@ module Make
 
     (* Exported interactions *)
 
-    let step mempool_worker pipeline =
+    let step operation_validator pipeline =
       (* Going through each buffer one by one. *)
       (* op_hash: Opertation_hash.t
        * op: Operation.t
-       * mop: Mempool_worker.operation *)
+       * mop: Operation_validator.operation *)
 
       if head_is_resolved pipeline.applying then begin
         let (op, p) = Queue.pop pipeline.applying in
@@ -203,14 +203,14 @@ module Make
             record_result pipeline op_hash (Cannot_download errs);
             Lwt.return_unit
         | Ok op ->
-            match Mempool_worker.parse op with
+            match Operation_validator.parse op with
             | Error errs ->
                 record_result pipeline op_hash (Cannot_parse errs);
                 Lwt.return_unit
             | Ok mop ->
                 let p =
                   Lwt_pool.use pipeline.pool (fun () ->
-                      Mempool_worker.validate mempool_worker mop) in
+                      Operation_validator.validate operation_validator mop) in
                 Queue.push (mop, p) pipeline.applying;
                 Lwt.return_unit
       end
@@ -218,7 +218,7 @@ module Make
       else if (not (Queue.is_empty pipeline.received)) then begin
         let op_hash = Queue.pop pipeline.received in
         (* TODO[?] should we specify the current peer for fetching? *)
-        let chain = Mempool_worker.chain mempool_worker in
+        let chain = Operation_validator.chain operation_validator in
         let p =
           Lwt_pool.use pipeline.pool (fun () ->
               Distributed_db.Operation.fetch chain.db op_hash ()) in
@@ -231,13 +231,13 @@ module Make
         select pipeline >>= fun () ->
         Lwt.return_unit
 
-    let process_batch mempool_worker pool_size input =
+    let work operation_validator pool_size input =
       let pipeline = create pool_size input in
       let rec loop () =
         if is_empty pipeline then
           Lwt.return pipeline.results
         else
-          step mempool_worker pipeline >>= fun () ->
+          step operation_validator pipeline >>= fun () ->
           loop ()
       in
       let work = loop () in
@@ -332,8 +332,8 @@ module Make
   end
 
   module Types = struct
-    type parameters = Mempool_worker.t * int
-    type state = { mempool_worker: Mempool_worker.t ; pool_size: int }
+    type parameters = Operation_validator.t * int
+    type state = { operation_validator: Operation_validator.t ; pool_size: int }
     type view = unit
     let view _ _ = ()
     let encoding = Data_encoding.unit
@@ -353,14 +353,14 @@ module Make
 
     type self = t
 
-    let on_launch _ _ (mempool_worker, pool_size) =
-      return Types.{ mempool_worker; pool_size }
+    let on_launch _ _ (operation_validator, pool_size) =
+      return Types.{ operation_validator; pool_size }
 
     let on_request : type a. self -> a Request.t -> a tzresult Lwt.t
       = fun t (Request.Batch os) ->
         let st = Worker.state t in
         Worker.record_event t (Event.Start os) ;
-        Work.process_batch st.mempool_worker st.pool_size os >>= fun r ->
+        Work.work st.operation_validator st.pool_size os >>= fun r ->
         return r
 
     let on_no_request _ = return_unit
@@ -389,12 +389,12 @@ module Make
     Worker.push_request_and_wait t (Request.Batch os)
     >>=? fun (_: output) -> return_unit
 
-  let create limits peer_id mempool_worker =
+  let create limits peer_id operation_validator =
     Worker.launch
       table
       limits.worker_limits
       peer_id
-      (mempool_worker, limits.max_promises_per_request)
+      (operation_validator, limits.max_promises_per_request)
       (module Handlers)
 
   let shutdown w =

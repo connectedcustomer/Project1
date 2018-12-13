@@ -33,7 +33,7 @@ type limits = {
 
 module type T = sig
   module Proto: Registered_protocol.T
-  module Mempool_worker: Mempool_worker.T
+  module Operation_validator: Operation_validator.T
     with module Proto = Proto
 
   (** The type of a peer worker. Each peer worker should be used for treating
@@ -47,11 +47,11 @@ module type T = sig
       their validity before gossiping them furhter. *)
   type input = Operation_hash.t list
 
-  (** [create limits peer_id mempool_worker] creates a peer worker meant
+  (** [create limits peer_id operation_validator] creates a peer worker meant
       to be used for validating batches of operations sent by the peer
       [peer_id]. The validation of each operations is delegated to the
-      associated [mempool_worker]. *)
-  val create: limits -> P2p_peer.Id.t -> Mempool_worker.t -> t tzresult Lwt.t
+      associated [operation_validator]. *)
+  val create: limits -> P2p_peer.Id.t -> Operation_validator.t -> t tzresult Lwt.t
 
   (** [shutdown t] closes the peer worker [t]. It returns a list of operation
       hashes that can be recycled when a new worker is created for the same peer.
@@ -60,8 +60,8 @@ module type T = sig
 
   (** [validate worker input] validates the batch of operations [input]. The
       work is performed by [worker] and the underlying validation of each
-      operation is performed by the [mempool_worker] that was used to [create]
-      [worker]. *)
+      operation is performed by the [operation_validator] that was used to
+      [create] [worker]. *)
   val validate: t -> input -> unit tzresult Lwt.t
 
   (** [status t] is for introspection of workers. Check the return type for
@@ -79,7 +79,7 @@ end
 module Make
     (Static: STATIC)
     (Proto: Registered_protocol.T)
-    (Mempool_worker: Mempool_worker.T with module Proto = Proto)
+    (Operation_validator: Operation_validator.T with module Proto = Proto)
   : T
     with module Proto = Proto
-     and module Mempool_worker = Mempool_worker
+     and module Operation_validator = Operation_validator
