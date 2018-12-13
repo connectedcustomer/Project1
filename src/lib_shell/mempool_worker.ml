@@ -723,11 +723,25 @@ module Make
 
   (* Exporting functions *)
 
-  let validate t parsed_op =
+  let rec validate t parsed_op =
     let state = Worker.state t in
     match ValidatingCache.find_opt state.validating_cache parsed_op with
-    | Some result_promise -> result_promise >>= return
     | None -> Worker.push_request_and_wait t (Request.Validate parsed_op)
+    | Some result_promise ->
+        result_promise >>= function
+        | Branch_delayed _ ->
+            (* Branch_delayed from the original request doesn't imply
+               Branch_delayed for this request: more operations could have been
+               introduced since *)
+            validate t parsed_op
+        | Applied _
+        | Branch_refused _
+        | Refused _
+        | Refused_by_pre_filter
+        | Refused_by_post_filter
+        | Duplicate
+        | Not_in_branch as result ->
+            return result
 
   let update_filter_config t filter_config =
     let state = Worker.state t in
