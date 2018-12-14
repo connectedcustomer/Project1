@@ -41,17 +41,26 @@ module type T = sig
   (** The protocol this plug-in understands. *)
   module Proto : Registered_protocol.T
 
-  (** Tells if an operation should be kept and propagated before even running it. *)
+  (** Tells if an operation should be kept. This check is intended to be
+      performed before the checking whether it is valid on top of any given
+      context. Note that operations that are refused by the pre_filter are never
+      porpagated by gossip. *)
   val pre_filter : config -> Proto.operation_data -> bool
 
-  (** Tells if an operation should be kept and propagated considering its result. *)
+  (** Tells if an operation should be kept. This check can only be performed
+      after an attempt to validate the operation has been performed. Filter can
+      thus use information about the validation states and the operation receipt
+      to make a decision. Note that operations that are refused by the
+      post_filter are never propagated on by gossip. *)
   val post_filter : config ->
     validation_state_before: Proto.validation_state ->
     validation_state_after: Proto.validation_state ->
     Proto.operation_data * Proto.operation_receipt -> bool Lwt.t
+
 end
 
-(** Registers a mempool plug-in for a specific protocol (according to its [Proto.hash]). *)
+(** Registers a mempool plug-in for a specific protocol. The registration uses
+    the protocol hash as a key and assumes hashes are unique per protocol. *)
 val register : (module T) -> unit
 
 (** Looks for a mempool plug-in for a specific protocol. *)

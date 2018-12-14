@@ -23,7 +23,6 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-
 type chain = {
   id : Chain_id.t ;
   db : Distributed_db.chain_db ;
@@ -50,4 +49,3 @@ let head_info_of_chain chain =
   Lwt.return
     { current_head ; current_head_hash ; current_head_header ;
       live_blocks ; live_operations }
-
