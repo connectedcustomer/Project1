@@ -24,15 +24,13 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Validating batches of operations with some peer-based
- * compartimentatilsation. *)
-
 type limits = {
   max_promises_per_request : int ;
   worker_limits : Worker_types.limits ;
 }
 
 module type T = sig
+
   module Proto: Registered_protocol.T
   module Operation_validator: Operation_validator.T
     with module Proto = Proto

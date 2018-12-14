@@ -24,14 +24,36 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-(** Distributing validation work between different workers, one for each peer. *)
+(** Validating batches of operations with some peer-based
+    compartmentalization. *)
 
+(** [max_promises_per_request] is the number of high-level promises that can be
+    unresolved at one time whilst processing one batch of operation by one peer.
+    The high-level promises include "retrieving an operation from the
+    distributed db," or "validating the operation on top of the currently
+    maintained context." Note that each of these pending promises may create
+    (and wait upon the resolving of) more promises. As such,
+    [max_promises_per_request] is not a true limit of the concurrency of the
+    process, but it nonetheless is helpful in throttling peer workers to ensure
+    each has a chance to make progress.
+
+    [worker_limits] limits the number of pending requests and other such generic
+    limitations on workers.
+*)
 type limits = {
   max_promises_per_request : int ;
   worker_limits : Worker_types.limits ;
 }
 
+(** A module [T] can be used to distribute work to different workers depending
+    on which peer the work has been triggered by. Note that the module does not
+    enforce that work is performed by the appropriate peer. It is up to the user
+    of a [T] module to manage a set of peer worker and select the appropriate
+    one to give work to. *)
 module type T = sig
+
+  (** Underlying modules. Validation of individual operations is delegated to
+      [Operation_validator]. *)
   module Proto: Registered_protocol.T
   module Operation_validator: Operation_validator.T
     with module Proto = Proto
@@ -40,34 +62,31 @@ module type T = sig
       all the operations from a given peer. *)
   type t
 
-  (** Types for calls into this module *)
-
   (** [input] are the batches of operations that are given to a peer worker to
       validate. These hashes are gossiped on the network, and the mempool checks
       their validity before gossiping them furhter. *)
   type input = Operation_hash.t list
 
-  (** [create limits peer_id operation_validator] creates a peer worker meant
-      to be used for validating batches of operations sent by the peer
-      [peer_id]. The validation of each operations is delegated to the
-      associated [operation_validator]. *)
+  (** [create limits peer_id op_validator] is, unless an error occurs durring
+      initialization, a peer worker meant to handle the work provided by peer
+      [peer_id]. The underlying validation of individual operation is delegated
+      to [op_validator]. *)
   val create: limits -> P2p_peer.Id.t -> Operation_validator.t -> t tzresult Lwt.t
 
-  (** [shutdown t] closes the peer worker [t]. It returns a list of operation
-      hashes that can be recycled when a new worker is created for the same peer.
-  *)
+  (** [shutdown worker] cancels ongoing work, clears internal state and returns
+      operations that have not been validated yet. This lets the user of this
+      module retry some of the validation work if appropriate. *)
   val shutdown: t -> input Lwt.t
 
-  (** [validate worker input] validates the batch of operations [input]. The
-      work is performed by [worker] and the underlying validation of each
-      operation is performed by the [operation_validator] that was used to
-      [create] [worker]. *)
+  (** [validate worker op_hashes] makes [worker] validate [op_hashes]. The
+      [worker] validates one batch of operations at a time. During the
+      validation of one batch, at most [limits.max_promises_per_request]
+      high-level promises are pending at any one time. *)
   val validate: t -> input -> unit tzresult Lwt.t
 
-  (** [status t] is for introspection of workers. Check the return type for
-   * information. *)
-  val status : t -> Worker_types.worker_status
-
+  (** [status worker] gives generic information about the worker state and its
+      requests. *)
+  val status: t -> Worker_types.worker_status
 
 end
 

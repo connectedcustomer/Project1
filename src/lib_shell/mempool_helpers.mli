@@ -23,15 +23,27 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-
+(** A type to pack the multiple bits of information about a chain that parts of
+    the mempool need. This aims to reduce
+    1. the amount of decoding happening: a [chain] value is generated once (by
+    the [chain] function below) and then shared amongst the different part of
+    the mempool, and
+    2. reduce the number of parameters/arguments for several functions of the
+    mempool: a single argument that packs multiple values replaces multiple
+    arguments. *)
 type chain = {
   id : Chain_id.t ;
   db : Distributed_db.chain_db ;
   state : State.Chain.t ;
 }
 
+(** [chain chain_db] is a [chain] value (see type definition above) derived from
+    the given [chain_db]. *)
 val chain : Distributed_db.chain_db -> chain
 
+(** A type to pack the multiple bits of information about a head of a chain that
+    parts of the mempool need. It has the same intended use as [chain] but for
+    the level of block. *)
 type head_info = {
   current_head : State.Block.t ;
   current_head_hash : Block_hash.t ;
@@ -40,4 +52,6 @@ type head_info = {
   live_operations: Operation_hash.Set.t ;
 }
 
+(** [head_info_of_chain chain] is a [head_info] value packing information about
+    the head of [chain]. *)
 val head_info_of_chain : chain -> head_info Lwt.t
