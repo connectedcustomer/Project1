@@ -537,8 +537,7 @@ module Make
 
   (*** end prevalidation ***)
 
-  let parse_helper raw_op =
-    let hash = Operation.hash raw_op in
+  let parse_helper raw_op hash =
     let size = Data_encoding.Binary.length Operation.encoding raw_op in
     if size > Proto.max_operation_data_length then
       error (Oversized_operation
@@ -686,8 +685,8 @@ module Make
     let op_hash = Operation.hash raw_op in
     begin match ParsedCache.find_opt parsed_cache op_hash with
       | None ->
-          let parsed_op = parse_helper raw_op in
-          ParsedCache.add parsed_cache op_hash parsed_op;
+          let parsed_op = parse_helper raw_op op_hash in
+          ParsedCache.add parsed_cache op_hash parsed_op ;
           parsed_op
       | Some parsed_op -> parsed_op
     end
