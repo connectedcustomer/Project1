@@ -110,6 +110,16 @@ module type TABLE = sig
   val clear : t -> unit
   val elements : t -> v list
 end
+module type SEEDED_TABLE = sig
+  type t
+  type v
+  val create : ?random:bool -> int -> t
+  val add : t -> v -> unit
+  val mem : t -> v -> bool
+  val remove : t -> v -> unit
+  val clear : t -> unit
+  val elements : t -> v list
+end
 
 
 (* fixed size set of Peers id. If the set exceed the maximal allowed capacity, the
@@ -129,6 +139,44 @@ module MakeTable (V: Hashtbl.HashedType) = struct
       size;
       ring = Ring.create size;
       table = Table.create size }
+
+  let add {contents = t } v =
+    Option.iter
+      (Ring.add_and_return_erased t.ring v)
+      ~f:(Table.remove t.table);
+    Table.add t.table v ()
+
+  let mem {contents = t} v = Table.mem t.table v
+
+  let remove {contents = t} v =
+    Table.remove t.table v
+
+  let clear ({contents = t} as tt) =
+    tt := { t with
+            ring = Ring.create t.size;
+            table = Table.create t.size
+          }
+
+  let elements {contents = t} =
+    Table.fold (fun k _ acc -> k::acc) t.table []
+
+end
+
+module MakeSeededTable (V: Hashtbl.SeededHashedType) = struct
+  module Table = Hashtbl.MakeSeeded(V)
+
+  type raw = {
+    size : int ;
+    ring : V.t Ring.t ;
+    table : unit Table.t ;
+  }
+  type t = raw ref
+  type v = V.t
+
+  let create ?random size = ref {
+      size;
+      ring = Ring.create size;
+      table = Table.create ?random size }
 
   let add {contents = t } v =
     Option.iter

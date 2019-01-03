@@ -86,4 +86,30 @@ module type TABLE = sig
 
 end
 
+module type SEEDED_TABLE = sig
+  type t
+  type v
+
+  (** [create size] inizialize an empty ring *)
+  val create : ?random:bool -> int -> t
+
+  (** [add t v] add a value to the ring. If the ring already contains size elements,
+      the first element is removed and [v] is added. *)
+  val add : t -> v -> unit
+
+  (** [mem t v] check if v is in the ring. O(1) *)
+  val mem : t -> v -> bool
+
+  (** [remove t v] remove one element from the table *)
+  val remove : t -> v -> unit
+
+  (** [retest t] remore all bindings from the current ring *)
+  val clear : t -> unit
+
+  (** [elements t] return the list of elements currently in the ring *)
+  val elements : t -> v list
+
+end
+
 module MakeTable (V: Hashtbl.HashedType) : TABLE with type v = V.t
+module MakeSeededTable (V: Hashtbl.SeededHashedType) : SEEDED_TABLE with type v = V.t

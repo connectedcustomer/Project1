@@ -23,17 +23,20 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-module Make(M: Hashtbl.HashedType) = struct
+module Make(M: Hashtbl.SeededHashedType) = struct
 
-  module Table = Ephemeron.K1.Make(M)
-  module Ring = Ring.MakeTable(M)
+  module Table = Ephemeron.K1.MakeSeeded(M)
+  module Ring = Ring.MakeSeededTable(M)
 
   type 'a t = {
     table : 'a Table.t ;
     ring : Ring.t ;
   }
 
-  let create n = { table = Table.create n ; ring = Ring.create n }
+  let create ?random n = {
+    table = Table.create ?random n ;
+    ring = Ring.create ?random n ;
+  }
 
   let add { ring ; table } k v =
     Ring.add ring k ;

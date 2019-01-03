@@ -23,7 +23,7 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-module Make (K: Hashtbl.HashedType): sig
+module Make (K: Hashtbl.SeededHashedType): sig
 
   (** A bounded table which optimistically cheats on the bound and sometimes
       counts wrong.
@@ -36,7 +36,7 @@ module Make (K: Hashtbl.HashedType): sig
   type 'a t
 
   (** [create n] is a table with at most [n] elements except when it has more. *)
-  val create: int -> 'a t
+  val create: ?random:bool -> int -> 'a t
 
   (** [add t k v] adds a mapping from key [k] to value [v] in the table.
       NOTE: when n values are bound to the same key, it may count as up to n

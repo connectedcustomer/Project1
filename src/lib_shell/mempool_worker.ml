@@ -288,11 +288,9 @@ module Make
 
   (* parsed operations' cache. used for memoization *)
   module ParsedCache = WeakRingTable.Make(struct
-      type t = Operation.t
-      let equal = Operation.equal
-      (* TODO: we can't use [Operation_hash] hashing because [WeakRingTable]
-         requires a [t -> int] hashing function. *)
-      let hash = Hashtbl.hash
+      type t = Operation_hash.t
+      let equal = Operation_hash.equal
+      let hash = Hashtbl.seeded_hash
     end)
 
   (* validated operations' cache. used for memoization *)
@@ -463,7 +461,7 @@ module Make
 
   type t = Worker.infinite Worker.queue Worker.t
 
-  let parsed_cache = ParsedCache.create Static.max_size_parsed_cache
+  let parsed_cache = ParsedCache.create ~random:true Static.max_size_parsed_cache
 
   let debug w =
     Format.kasprintf (fun msg -> Worker.record_event w (Debug msg))
@@ -685,10 +683,11 @@ module Make
 
   (* atomic parse + memoization *)
   let parse raw_op =
-    begin match ParsedCache.find_opt parsed_cache raw_op with
+    let op_hash = Operation.hash raw_op in
+    begin match ParsedCache.find_opt parsed_cache op_hash with
       | None ->
           let parsed_op = parse_helper raw_op in
-          ParsedCache.add parsed_cache raw_op parsed_op;
+          ParsedCache.add parsed_cache op_hash parsed_op;
           parsed_op
       | Some parsed_op -> parsed_op
     end
