@@ -287,38 +287,13 @@ module Make
   end
 
   (* parsed operations' cache. used for memoization *)
-  module ParsedCache = struct
-
-    type t = {
-      table: operation tzresult Operation_hash.Table.t ;
-      ring: Operation_hash.t Ring.t ;
-    }
-
-    let create () : t = {
-      table = Operation_hash.Table.create Static.max_size_parsed_cache ;
-      ring = Ring.create Static.max_size_parsed_cache ;
-    }
-
-    let add t raw_op parsed_op =
-      let hash = Operation.hash raw_op in
-      Option.iter
-        ~f:(Operation_hash.Table.remove t.table)
-        (Ring.add_and_return_erased t.ring hash);
-      Operation_hash.Table.replace t.table hash parsed_op
-
-    let find_opt t raw_op =
-      let hash = Operation.hash raw_op in
-      Operation_hash.Table.find_opt t.table hash
-
-    let find_hash_opt t hash =
-      Operation_hash.Table.find_opt t.table hash
-
-    let rem t hash =
-      (* NOTE: hashes are not removed from the ring. As a result, the cache size
-       * bound can be lowered. This is a non-issue because it's only a cache. *)
-      Operation_hash.Table.remove t.table hash
-
-  end
+  module ParsedCache = WeakRingTable.Make(struct
+      type t = Operation.t
+      let equal = Operation.equal
+      (* TODO: we can't use [Operation_hash] hashing because [WeakRingTable]
+         requires a [t -> int] hashing function. *)
+      let hash = Hashtbl.hash
+    end)
 
   (* validated operations' cache. used for memoization *)
   module ValidatedCache = struct
@@ -488,7 +463,7 @@ module Make
 
   type t = Worker.infinite Worker.queue Worker.t
 
-  let parsed_cache = ParsedCache.create ()
+  let parsed_cache = ParsedCache.create Static.max_size_parsed_cache
 
   let debug w =
     Format.kasprintf (fun msg -> Worker.record_event w (Debug msg))
@@ -617,10 +592,6 @@ module Make
     | Request.Validate parsed_op -> on_validate w parsed_op >>= return
 
   let on_launch (_ : t) (_ : Name.t) (parameters : Types.parameters) =
-    (* remove all operations that are already included *)
-    Operation_hash.Set.iter (fun hash ->
-        ParsedCache.rem parsed_cache hash
-      ) parameters.head_info.live_operations;
     return {
       chain = parameters.chain ;
       validation_state = parameters.validation_state ;
