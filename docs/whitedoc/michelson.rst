@@ -1793,7 +1793,7 @@ A typing rule can be inferred:
 
 ::
 
-    > MAP_CAR code  =>  DUP ; CDR ; DIP { CAR ; code } ; SWAP ; PAIR
+    > MAP_CAR code  =>  DUP ; CDR ; DIP { CAR ; {code} } ; SWAP ; PAIR
 
 -  ``MAP_CDR`` code: Transform the first value of a pair.
 
