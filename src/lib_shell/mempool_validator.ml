@@ -189,26 +189,15 @@ module Create (Pre : PRE) : T = struct
       mempool_peer_workers
       P2p_peer.Id.Map.empty
 
-  let shutdown () =
-    begin
-      (* collect recycling, first as a list of promises, then as a promise of map *)
-      P2p_peer.Id.Table.fold
-        (fun _peer_id mpw acc -> (Mempool_peer_worker.shutdown mpw) :: acc)
-        mempool_peer_workers
-        [] |>
-      Lwt_list.fold_left_s
-        (fun acc p -> p >>= fun r -> Lwt.return (r :: acc))
-        []
-    end >>= fun from_peer_workers ->
-    clear_mempool_peer_workers ();
-    let filter_config = Operation_validator.filter_config !operation_validator_ref in
-    let filter_config =
-      Data_encoding.Json.construct
-        Mempool_filters.config_encoding filter_config in
-    Operation_validator.shutdown !operation_validator_ref >>= fun from_operation_validator ->
-    Mempool_advertiser.shutdown !mempool_advertiser_ref >>= fun () ->
-    Lwt.return (from_operation_validator, from_peer_workers, filter_config)
 
+  (** Almost identical to [recycling] but keeping the protocol-dependent parsing
+      information intact *)
+  type internal_recycling =
+    (Operation_validator.operation list *
+     Operation_hash.t list list *
+     Data_encoding.json)
+
+  (* Recycling helpers *)
   let recycle_parsed max_concurrency batch =
     Mempool_batch_processor.batch_parsed
       !operation_validator_ref
@@ -223,33 +212,17 @@ module Create (Pre : PRE) : T = struct
     Lwt.return_unit
   let recycle_p max_concurrency batches =
     Lwt_list.iter_p (recycle_one max_concurrency) batches
-
-  let recycle (from_operation_validator, from_peer_workers, filter_config) =
-    begin
-      try
-        let filter_config =
-          Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
-        Operation_validator.update_filter_config !operation_validator_ref filter_config
-      with
-      | _ -> () (* TODO: only catch JSON decoding errors *)
-    end ;
-    recycle_parsed 16 from_operation_validator >>= fun () ->
-    recycle_p 4 from_peer_workers
-
-  let new_head _head =
-    let filter_config = Operation_validator.filter_config !operation_validator_ref in
-    Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
-    shutdown () >>= fun recycling ->
-    Mempool_advertiser.create limits.advertiser_limits chain head_info >>=? fun ma ->
-    mempool_advertiser_ref := ma ;
-    Operation_validator.create
-      limits.operation_validator_limits
-      chain head_info
-      filter_config
-      ma >>=? fun ov ->
-    operation_validator_ref := ov;
-    recycle recycling >>= fun () ->
-    return_unit
+  let recycle_filter_config filter_config =
+    try
+      let filter_config =
+        Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
+      Operation_validator.update_filter_config !operation_validator_ref filter_config
+    with
+    | _ -> () (* TODO: only catch JSON decoding errors *)
+  let recycling_of_internal_recycling (from_operation_validator, from_peer_workers, filter_config) =
+    let from_operation_validator =
+      List.map (fun mop -> mop.Operation_validator.hash) from_operation_validator in
+    { from_operation_validator ; from_peer_workers ; filter_config }
 
   module Proto_services = Block_services.Make(Proto)(Proto)
 
@@ -276,23 +249,51 @@ module Create (Pre : PRE) : T = struct
 
   (* Re-exporting some functions to provide proto-agnostic recycling *)
 
+  let internal_shutdown () : internal_recycling Lwt.t =
+    begin
+      (* collect recycling, first as a list of promises, then as a promise of map *)
+      P2p_peer.Id.Table.fold
+        (fun _peer_id mpw acc -> (Mempool_peer_worker.shutdown mpw) :: acc)
+        mempool_peer_workers
+        [] |>
+      Lwt_list.fold_left_s
+        (fun acc p -> p >>= fun r -> Lwt.return (r :: acc))
+        []
+    end >>= fun from_peer_workers ->
+    clear_mempool_peer_workers ();
+    let filter_config = Operation_validator.filter_config !operation_validator_ref in
+    let filter_config =
+      Data_encoding.Json.construct
+        Mempool_filters.config_encoding filter_config in
+    Operation_validator.shutdown !operation_validator_ref
+    >>= fun from_operation_validator ->
+    Lwt.return (from_operation_validator, from_peer_workers, filter_config)
+
   let shutdown () =
-    shutdown () >>= fun (from_operation_validator, from_peer_workers, filter_config) ->
-    let from_operation_validator =
-      List.map (fun mop -> mop.Operation_validator.hash) from_operation_validator in
-    Lwt.return { from_operation_validator ; from_peer_workers ; filter_config }
+    internal_shutdown () >|= recycling_of_internal_recycling
+
+  let internal_recycle (from_operation_validator, from_peer_workers, filter_config) =
+    recycle_filter_config filter_config ;
+    Lwt.join [
+      recycle_parsed 16 from_operation_validator ;
+      recycle_p 4 from_peer_workers ]
 
   let recycle { from_operation_validator ; from_peer_workers ; filter_config } =
-    begin
-      try
-        let filter_config =
-          Data_encoding.Json.destruct Mempool_filters.config_encoding filter_config in
-        Operation_validator.update_filter_config !operation_validator_ref filter_config
-      with
-      | _ -> () (* TODO: only catch JSON decoding errors *)
-    end ;
-    recycle_one 16 from_operation_validator >>= fun () ->
-    recycle_p 4 from_peer_workers
+    recycle_filter_config filter_config ;
+    Lwt.join [
+      recycle_one 16 from_operation_validator ;
+      recycle_p 4 from_peer_workers ]
+
+  let new_head _head =
+    let filter_config = Operation_validator.filter_config !operation_validator_ref in
+    Mempool_helpers.head_info_of_chain chain >>= fun head_info ->
+    internal_shutdown () >>= fun internal_recycling ->
+    Mempool_advertiser.create limits.advertiser_limits chain head_info >>=? fun ma ->
+    mempool_advertiser_ref := ma ;
+    Operation_validator.create limits.operation_validator_limits chain head_info filter_config ma >>=? fun ov ->
+    operation_validator_ref := ov;
+    internal_recycle internal_recycling >>= fun () ->
+    return_unit
 
 end
 
