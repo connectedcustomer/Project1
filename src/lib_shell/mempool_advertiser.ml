@@ -229,14 +229,17 @@ module Make
   type t = Worker.infinite Worker.queue Worker.t
 
   let send_advertisement (state : Types.state) =
-    let mempool =
-      { state.rev_mempool with
-        known_valid = List.rev state.rev_mempool.known_valid } in
-    state.rev_mempool <- Mempool.empty ;
-    Distributed_db.Advertise.current_head
-      state.parameters.chain_db
-      ~mempool
-      state.parameters.head
+    if Mempool.is_empty state.rev_mempool then
+      ()
+    else
+      let mempool =
+        { state.rev_mempool with
+          known_valid = List.rev state.rev_mempool.known_valid } in
+      state.rev_mempool <- Mempool.empty ;
+      Distributed_db.Advertise.current_head
+        state.parameters.chain_db
+        ~mempool
+        state.parameters.head
 
   let handle_request
     : type r. t -> r Request.t -> r tzresult

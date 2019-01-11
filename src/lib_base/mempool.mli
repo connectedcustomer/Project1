@@ -39,3 +39,5 @@ val bounded_encoding: ?max_operations:int -> unit -> mempool Data_encoding.t
 
 val empty: mempool
 (** Empty mempool. *)
+
+val is_empty : mempool -> bool
